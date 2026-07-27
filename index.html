@@ -119,6 +119,275 @@ function botVote() {
   }
 }
 
+
+// ============================================================
+// Bot AI — Strategy Functions
+// ============================================================
+
+// Get all player UIDs (sorted by join order)
+function getAllUids(data) {
+  return Object.keys(data.players || {});
+}
+
+// Get player role
+function getRole(uid, gs) {
+  const p = (gs.roleAssignments || {})[uid];
+  return p || null;
+}
+
+// Get player's initial info (sees)
+function getInfo(uid, gs) {
+  return (gs.initialInfo || {})[uid] || null;
+}
+
+// Is player good? (including plain good)
+function isGood(uid, gs) {
+  const r = getRole(uid, gs);
+  if (!r) return true; // plain good
+  return ROLE_FACTION[r] === 'good';
+}
+
+// Known evils by this player (who they see as evil)
+function seenEvils(uid, gs) {
+  const info = getInfo(uid, gs);
+  if (!info || info.seeType !== 'evil') return [];
+  return info.sees || [];
+}
+
+// For Percival: merlin candidates (merlin + morgana)
+function percivalCandidates(uid, gs) {
+  const info = getInfo(uid, gs);
+  if (!info || info.seeType !== 'merlin_candidates') return [];
+  return info.sees || [];
+}
+
+// Build team proposal for a bot leader
+function getBotTeamProposal(leaderUid, gs, allPlayers) {
+  const assignments = gs.roleAssignments || {};
+  const leaderRole = assignments[leaderUid];
+  const teamSize = MISSION_CONFIG[Object.keys(gs.roleAssignments || {}).length || 5].sizes[(gs.mission || 1) - 1];
+
+  const candidates = allPlayers.filter(p => p.uid !== leaderUid);
+  let team = [];
+
+  if (ROLE_FACTION[leaderRole] === 'evil') {
+    // === EVIL LEADER ===
+    // Priority: include evil teammates
+    const evildoers = candidates.filter(p => {
+      const r = assignments[p.uid];
+      if (!r) return false;
+      return ROLE_FACTION[r] === 'evil' && r !== 'oberon'; // Oberon is孤狼
+    });
+    team.push(...evildoers.map(p => p.uid));
+    // Fill remaining with random (preferably players leader wants to manipulate)
+    const remaining = candidates.filter(p => !team.includes(p.uid));
+    while (team.length < teamSize && remaining.length > 0) {
+      const idx = Math.floor(Math.random() * remaining.length);
+      team.push(remaining.splice(idx, 1)[0].uid);
+    }
+  } else {
+    // === GOOD LEADER ===
+    const knownEvils = new Set();
+    if (leaderRole === 'merlin') {
+      // Merlin sees all evils (except mordred) — avoid them
+      candidates.forEach(p => {
+        const r = assignments[p.uid];
+        if (r && ROLE_FACTION[r] === 'evil' && r !== 'mordred') knownEvils.add(p.uid);
+      });
+    }
+    // Percival knows merlin candidates — can use this info
+    // Plain good has no info
+
+    // Prefer players not known to be evil
+    let preferred = candidates.filter(p => !knownEvils.has(p.uid));
+    // Shuffle to avoid predictable patterns
+    preferred = shuffle(preferred.map(p => p.uid));
+    team = preferred.slice(0, teamSize);
+
+    // If not enough, fill with anyone
+    if (team.length < teamSize) {
+      const remaining = candidates.filter(p => !team.includes(p.uid));
+      while (team.length < teamSize && remaining.length > 0) {
+        const idx = Math.floor(Math.random() * remaining.length);
+        team.push(remaining.splice(idx, 1)[0].uid);
+      }
+    }
+  }
+  return team.slice(0, teamSize);
+}
+
+// Determine bot vote on a proposed team
+function getBotTeamVote(uid, gs, allPlayers) {
+  const assignments = gs.roleAssignments || {};
+  const myRole = assignments[uid];
+  const team = (gs.currentTeam || {}).members || [];
+  const myFaction = ROLE_FACTION[myRole] || 'good';
+
+  if (myFaction === 'good') {
+    // Good player: approve unless known evildoers are on the team
+    const knownEvils = new Set();
+    if (myRole === 'merlin') {
+      allPlayers.forEach(p => {
+        const r = assignments[p.uid];
+        if (r && ROLE_FACTION[r] === 'evil' && r !== 'mordred') knownEvils.add(p.uid);
+      });
+    }
+    const evilsOnTeam = team.filter(t => knownEvils.has(t));
+    if (evilsOnTeam.length > 0) return 'reject';
+    return 'approve';
+  } else {
+    // Evil player: approve if evil friends are on the team, else reject
+    const myEvilTeammates = new Set();
+    if (myRole !== 'oberon') {
+      // Oberon doesn't know anyone
+      allPlayers.forEach(p => {
+        if (p.uid === uid) return;
+        const r = assignments[p.uid];
+        if (r && ROLE_FACTION[r] === 'evil' && r !== 'oberon') myEvilTeammates.add(p.uid);
+      });
+    }
+    const evilsOnTeam = team.filter(t => myEvilTeammates.has(t));
+    if (evilsOnTeam.length > 0) return 'approve';
+    return 'reject';
+  }
+}
+
+// Determine bot mission vote (success / fail)
+function getBotMissionVote(uid, gs, allPlayers) {
+  const assignments = gs.roleAssignments || {};
+  const myRole = assignments[uid];
+  const mission = gs.mission || 1;
+  const myFaction = ROLE_FACTION[myRole] || 'good';
+
+  if (myFaction === 'good') return 'success';
+
+  // Evil logic
+  if (myRole === 'oberon') {
+    // Oberon:孤狼, behaves randomly — 30% fail
+    return Math.random() < 0.3 ? 'fail' : 'success';
+  }
+
+  // Mordred: 30% fail (he can't be identified anyway)
+  if (myRole === 'mordred') {
+    return Math.random() < 0.3 ? 'fail' : 'success';
+  }
+
+  // Regular evil (assassin, morgana)
+  // Strategy: fail only if it matters, avoid early exposure
+  // Mission 1-2: mostly success to build trust
+  if (mission <= 2) {
+    return Math.random() < 0.15 ? 'fail' : 'success';
+  }
+  // Mission 3+: more willing to fail
+  // But only fail if evil is not obvious
+  const myEvilCount = allPlayers.filter(p => {
+    const r = assignments[p.uid];
+    return r && ROLE_FACTION[r] === 'evil' && r !== 'oberon';
+  }).length;
+  // If too many fails already given, might expose us — play safe
+  const results = gs.missionResults || {};
+  const failSoFar = Object.values(results).filter(r => !r.success).length;
+  if (failSoFar >= 2) return 'success'; // don't give away more
+  return Math.random() < 0.55 ? 'fail' : 'success';
+}
+
+// Assassin bot picks who to assassinate (returns targetUid or null)
+function getAssassinationTarget(gs, allPlayers) {
+  const assignments = gs.roleAssignments || {};
+  // Find assassin
+  const assassinUid = Object.keys(assignments).find(uid => assignments[uid] === 'assassin');
+  if (!assassinUid) return null;
+
+  // Assassin knows all evils (except oberon) — use that info
+  // Try to identify Merlin
+  const knownEvils = new Set();
+  allPlayers.forEach(p => {
+    const r = assignments[p.uid];
+    if (r && ROLE_FACTION[r] === 'evil' && r !== 'oberon') knownEvils.add(p.uid);
+  });
+
+  // Find the player most likely to be Merlin
+  // Merlin candidates: good players who are not known to be good by others
+  // In a bot game, the "best" Merlin to assassinate is:
+  // 1. A good player who is NOT a known evil (obviously)
+  // 2. The most "central" good player (in bot logic, pick random good)
+
+  const goods = allPlayers.filter(p => {
+    const r = assignments[p.uid];
+    if (!r) return true; // plain good
+    return ROLE_FACTION[r] === 'good';
+  });
+
+  // Simple strategy: assassinate a random good player
+  // Slightly better: prefer the one that looks like Merlin (played moderately)
+  // In our bot game, we'll pick the plain good player or Percival's merlin candidates
+  // Heuristic: prefer players with merlin_candidates info if Percival exists
+
+  // Try to find Merlin
+  let merlinUid = null;
+  // Percival's view: if Percival is good, they see merlin candidates
+  // We (as assassin) can look at initialInfo to see who saw what
+  const percivalInfo = Object.values(gs.initialInfo || {}).find(i => i.seeType === 'merlin_candidates');
+  if (percivalInfo && percivalInfo.sees && percivalInfo.sees.length > 0) {
+    // Pick the candidate that Percival sees — likely one is Merlin, one is Morgana
+    // Pick the one that is NOT known evil (Morgana is evil, Merlin is good)
+    // Actually assassin already knows who's evil... so this doesn't help directly
+  }
+
+  // Best guess: pick a good player who is not obviously a plain good
+  // Pick by: if there's a merlin, that player is most dangerous
+  // In bot game: just pick the first good player that's not the assassin
+  if (goods.length > 0) {
+    merlinUid = goods[Math.floor(Math.random() * goods.length)].uid;
+  }
+  return merlinUid;
+}
+
+// Schedule bot leader auto-propose team
+function scheduleBotPropose(leaderUid, gs) {
+  const allPlayers = playersOrdered(state.roomData);
+  const team = getBotTeamProposal(leaderUid, gs, allPlayers);
+  if (team.length > 0) {
+    setTimeout(() => {
+      proposeTeam(team);
+    }, 1000 + Math.random() * 1500);
+  }
+}
+
+// Schedule bot votes (voting or mission)
+function scheduleBotVotes(phase) {
+  const gs = state.roomData.gameState || {};
+  const allPlayers = playersOrdered(state.roomData);
+  const allUids = allPlayers.map(p => p.uid);
+
+  allUids.forEach(uid => {
+    const p = state.roomData.players[uid];
+    if (!p || !p.isBot) return;
+    if (uid === state.uid) return; // don't handle own uid
+
+    if (phase === 'stage3') {
+      const team = (gs.currentTeam || {}).members || [];
+      const voted = (gs.currentVotes || {})[uid];
+      if (!team.includes(uid) || voted) return;
+      const vote = getBotTeamVote(uid, gs, allPlayers);
+      const delay = 800 + Math.random() * 1500;
+      setTimeout(() => {
+        db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
+      }, delay);
+    } else if (phase === 'stage4') {
+      const team = (gs.currentTeam || {}).members || [];
+      const voted = (gs.missionVotes || {})[uid];
+      if (!team.includes(uid) || voted) return;
+      const vote = getBotMissionVote(uid, gs, allPlayers);
+      const delay = 800 + Math.random() * 1500;
+      setTimeout(() => {
+        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
+      }, delay);
+    }
+  });
+}
+
+
 // ============================================================
 // App State
 // ============================================================
@@ -1533,39 +1802,32 @@ function attachRoomListener() {
     }
     if (state.roleModalOpen) renderRoleModal();
     else render();
-    // 触发 BOT 自動投票
+    // 觸發 BOT 自動動作
     clearBotVoteTimers();
+    const gs2 = data.gameState || {};
+    // Stage2: bot leader auto-proposes team
+    if (data.meta && data.meta.phase === 'stage2') {
+      const leaderUid = gs2.leaderUid;
+      if (leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot) {
+        scheduleBotPropose(leaderUid, gs2);
+      }
+    }
+    // Stage3 & Stage4: bot voting
     if (data.meta && ['stage3','stage4'].includes(data.meta.phase)) {
-      Object.keys(data.players || {}).forEach(uid => {
-        if (uid === state.uid) return; // 自己不處理
-        const p = data.players[uid];
-        if (!p.isBot) return;
-        const gs = data.gameState || {};
-        // 表決階段
-        if (data.meta.phase === 'stage3') {
-          const team = gs.currentTeam && gs.currentTeam.members;
-          const voted = gs.currentVotes && gs.currentVotes[uid];
-          if (team && team.includes(uid) && !voted) {
-            botVoteTimers[uid] = setTimeout(() => {
-              const vote = Math.random() < 0.5 ? 'approve' : 'reject';
-              db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
-            }, 800 + Math.random() * 1200);
-          }
+      scheduleBotVotes(data.meta.phase);
+    }
+    // Game over: assassin bot auto-kills
+    if (data.meta && data.meta.phase === 'over' && data.meta.winner === 'good') {
+      const assignments = gs2.roleAssignments || {};
+      const assassinUid = Object.keys(assignments).find(uid => assignments[uid] === 'assassin');
+      if (assassinUid && data.players && data.players[assassinUid] && data.players[assassinUid].isBot) {
+        const target = getAssassinationTarget(gs2, playersOrdered(data));
+        if (target) {
+          setTimeout(() => {
+            db.ref('rooms/' + state.roomCode + '/gameState/assassinationTarget').set(target);
+          }, 1500);
         }
-        // 任務階段
-        if (data.meta.phase === 'stage4') {
-          const team = gs.currentTeam && gs.currentTeam.members;
-          const voted = gs.missionVotes && gs.missionVotes[uid];
-          if (team && team.includes(uid) && !voted) {
-            botVoteTimers[uid] = setTimeout(() => {
-              const role = p.botVoteRole || (gs.roleAssignments && gs.roleAssignments[uid]) || null;
-              let success = true;
-              if (role && ROLE_FACTION[role] === 'evil') success = Math.random() < 0.7;
-              db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(success ? 'success' : 'fail');
-            }, 800 + Math.random() * 1200);
-          }
-        }
-      });
+      }
     }
   });
   // 在線狀態

@@ -663,7 +663,7 @@ function renderRoleConfigBody() {
   const selectedRoles = getSelectedRoles(roles);
   const { good: selGood, evil: selEvil } = countRoles(selectedRoles);
   const hintMsg = getRoleHintMessage(roles, count);
-  const canConfirm = state.isHost && isRoleSelectionValid(roles, count) && selGood === goodCount && selEvil === evilCount;
+  const canConfirm = state.isHost && isRoleSelectionValid(roles, count);
 
   const playersHtml = players.map(p => `<span class="inline-block bg-slate-100 px-2 py-1 rounded text-sm">${p.isHost ? '⭐' : ''}${esc(p.nickname)}</span>`).join('');
 
@@ -704,7 +704,7 @@ function renderRoleConfigBody() {
       ${hintMsg ? `<div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">${hintMsg}</div>` : ''}
 
       <div>
-        <div class="text-xs text-slate-500 mb-2">正義陣營 · 已選 ${selGood}/${goodCount}</div>
+        <div class="text-xs text-slate-500 mb-2">正義陣營 · 已選 ${selGood}（不足自動補忠臣）</div>
         <div class="space-y-2">
           ${RoleBtn({ id: 'merlin', label: '梅林', faction: 'good', desc: '看到所有壞人（除莫德雷德）', forced: true, locked: false })}
           ${RoleBtn({ id: 'percival', label: '派西維爾', faction: 'good', desc: '看到梅林 + 莫甘娜（不分清楚）', forced: false, locked: false })}
@@ -712,7 +712,7 @@ function renderRoleConfigBody() {
       </div>
 
       <div>
-        <div class="text-xs text-slate-500 mb-2">邪惡陣營 · 已選 ${selEvil}/${evilCount}</div>
+        <div class="text-xs text-slate-500 mb-2">邪惡陣營 · 已選 ${selEvil}（不足自動補爪牙）</div>
         <div class="space-y-2">
           ${RoleBtn({ id: 'assassin', label: '刺客', faction: 'evil', desc: '遊戲結束可刺殺梅林', forced: true, locked: false })}
           ${RoleBtn({ id: 'morgana', label: '莫甘娜', faction: 'evil', desc: '對派西維爾假扮梅林', forced: false, locked: false })}
@@ -730,8 +730,8 @@ function renderRoleConfigBody() {
       ${state.isHost ? `
         <div class="pt-4 border-t space-y-2">
           <div class="text-xs text-center text-slate-500">
-            正 ${selGood}/${goodCount} · 邪 ${selEvil}/${evilCount}
-            ${selGood === goodCount && selEvil === evilCount ? '<span class="text-emerald-600 font-bold ml-2">✅ 人數符合</span>' : '<span class="text-rose-500 font-bold ml-2">需湊滿</span>'}
+            正 ${selGood} · 邪 ${selEvil}（不足自動補齊）
+            <span class="text-emerald-600 font-bold ml-2">✅ 可開始</span>
           </div>
           <button onclick="doConfirmRoles()" ${canConfirm ? '' : 'disabled'} class="w-full ${canConfirm ? 'bg-indigo-600 active:scale-95' : 'bg-slate-300 cursor-not-allowed'} text-white py-4 rounded-xl text-lg font-bold transition-all">確認並開始</button>
         </div>
@@ -766,9 +766,6 @@ function getSelectedRoles(roles) {
 }
 
 function isRoleSelectionValid(roles, playerCount) {
-  const { good, evil } = FACTION_TABLE[playerCount] || FACTION_TABLE[5];
-  const { good: sg, evil: se } = countRoles(getSelectedRoles(roles));
-  if (sg !== good || se !== evil) return false;
   // 5人派西維爾規則：要有莫德雷德或莫甘娜
   if (playerCount === 5 && roles.percival && !roles.morgana && !roles.mordred) return false;
   // 湖中女神 8+ 人才能用
@@ -782,11 +779,7 @@ function getRoleHintMessage(roles, playerCount) {
   if (playerCount === 5 && roles.percival && !roles.morgana && !roles.mordred) {
     msgs.push('💡 五人局：選了派西維爾，需再選莫甘娜或莫德雷德');
   }
-  // 人數不符
-  const { good, evil } = FACTION_TABLE[playerCount] || FACTION_TABLE[5];
-  const { good: sg, evil: se } = countRoles(getSelectedRoles(roles));
-  if (sg !== good) msgs.push(`正義需 ${good} 張（目前 ${sg}）`);
-  if (se !== evil) msgs.push(`邪惡需 ${evil} 張（目前 ${se}）`);
+
   // 湖中女神
   if (roles.ladyOfLake && playerCount <= 7) {
     msgs.push('💡 湖中女神需 8 人以上');

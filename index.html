@@ -671,14 +671,15 @@ function renderRoleConfigBody() {
     const isOn = !!roles[id];
     const baseCls = faction === 'good'
       ? (isOn ? 'bg-sky-500 text-white border-sky-600' : 'bg-white text-slate-600 border-slate-300')
-      : (isOn ? 'bg-rose-500 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-300');
-    const cursorCls = (locked || !state.isHost) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer active:scale-95';
+      : (isOn ? 'bg-rose-500 text-white border-slate-600' : 'bg-white text-slate-600 border-slate-300');
+    const clickable = !locked && state.isHost;
+    const cursorCls = locked ? 'cursor-not-allowed opacity-60' : (state.isHost ? 'cursor-pointer active:scale-95' : 'cursor-default');
     const factionLabel = faction === 'good' ? '正' : '邪';
     const hintIcon = id === 'percival' && !isOn && state.isHost ? '<div class="text-xs text-amber-500 mt-1">💡 啟用會連動莫甘娜</div>' : '';
     const lockedEl = locked ? `<div class="text-xs text-slate-400 mt-1">${lockedHint}</div>` : hintIcon;
+    const dataAttr = clickable ? ` data-role="${id}" onclick="handleRoleBtnClick(this)" ontouchstart="this.dataset.touched=1" ontouchend="if(this.dataset.touched){delete this.dataset.touched;handleRoleBtnClick(this)}"` : '';
     return `
-      <div class="${baseCls} border-2 rounded-xl p-3 transition-all ${cursorCls}"
-           ${!locked && state.isHost ? `onclick="toggleRole('${id}')"` : ''}>
+      <div class="${baseCls} border-2 rounded-xl p-3 transition-all ${cursorCls}"${dataAttr}>
         <div class="flex items-center justify-between">
           <div class="font-bold text-sm">${esc(label)}</div>
           <div class="text-xs font-bold px-2 py-0.5 rounded ${faction === 'good' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}">${factionLabel}</div>
@@ -1345,6 +1346,14 @@ async function doJoin() {
 async function doStart() {
   // 進 roleConfig
   await db.ref('rooms/' + state.roomCode + '/meta/phase').set('roleConfig');
+}
+
+function handleRoleBtnClick(el) {
+  const role = el.dataset.role;
+  if (!role) return;
+  const current = state.roomData?.gameConfig?.roles || {};
+  const on = !current[role];
+  toggleRole(role, on);
 }
 
 function toggleRole(role, on) {

@@ -839,7 +839,8 @@ function renderStageBody(phase) {
           }).join('')}
         </div>
         ${isLeader ? `
-          <button onclick="submitTeam()" ${currentTeam.length !== teamSize ? 'disabled' : ''} class="w-full ${currentTeam.length === teamSize ? 'bg-indigo-600' : 'bg-slate-300'} text-white py-4 rounded-xl text-lg font-bold ${currentTeam.length === teamSize ? 'active:scale-95' : 'cursor-not-allowed'}">提交出征名單</button>
+          ${currentTeam.length >= teamSize ? '<div class="text-center text-xs text-emerald-600 font-medium">✅ 人數已滿，可以提交</div>' : `<div class="text-center text-xs text-amber-500">還需選 ${teamSize - currentTeam.length} 人</div>`}
+          <button onclick="submitTeam()" ${currentTeam.length !== teamSize ? 'disabled' : ''} class="w-full ${currentTeam.length === teamSize ? 'bg-indigo-600 active:scale-95' : 'bg-slate-300 cursor-not-allowed'} text-white py-4 rounded-xl text-lg font-bold transition-all">提交出征名單</button>
         ` : `
           <div class="text-center text-slate-500 text-sm py-4">等待隊長提交...</div>
         `}
@@ -1127,23 +1128,40 @@ function renderRoleModal() {
   const factionColor = roleInfo.faction === 'good' ? 'sky' : 'rose';
   const allRoles = ['merlin', 'percival', 'assassin', 'morgana', 'mordred', 'oberon'];
   const cfg = state.roomData.gameConfig || { roles: {} };
-  const usedRoles = ['merlin', 'assassin'];
-  if (cfg.roles.percival) usedRoles.push('percival', 'morgana');
-  if (cfg.roles.mordred) usedRoles.push('mordred');
-  if (cfg.roles.oberon) usedRoles.push('oberon');
+  // 收集本局所有角色（包含湊數用的 plain good/evil）
+  const cfgRoles = cfg.roles || {};
+  const { good: cfgGood, evil: cfgEvil } = FACTION_TABLE[Object.keys(state.roomData.players).length] || FACTION_TABLE[5];
+  const assigned = {};
+  assigned.merlin = true;
+  assigned.assassin = true;
+  if (cfgRoles.percival) { assigned.percival = true; assigned.morgana = true; }
+  if (cfgRoles.mordred) assigned.mordred = true;
+  if (cfgRoles.oberon) assigned.oberon = true;
+  if (cfgRoles.ladyOfLake) assigned.ladyOfLake = true;
 
-  const roleListHtml = usedRoles.map(r => {
+  // 統計已有名單，算出還需補幾個 plain good/evil
+  const specRoles = Object.keys(assigned);
+  const goodSpec = specRoles.filter(r => ROLE_FACTION[r] === 'good').length;
+  const evilSpec = specRoles.filter(r => ROLE_FACTION[r] === 'evil').length;
+  const plainGood = cfgGood - goodSpec;
+  const plainEvil = cfgEvil - evilSpec;
+
+  const allRolesList = [...specRoles];
+  for (let i = 0; i < plainGood; i++) allRolesList.push('good');
+  for (let i = 0; i < plainEvil; i++) allRolesList.push('evil');
+
+  const roleListHtml = allRolesList.map(r => {
     const info = ROLE_INFO[r];
-    const isMe = r === myRole;
     const c = info.faction === 'good' ? 'sky' : 'rose';
+    const factionLabel = info.faction === 'good' ? '正' : '邪';
+    const factionBg = info.faction === 'good' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700';
     return `
-      <div class="border-2 ${isMe ? 'border-amber-400 bg-amber-50' : 'border-slate-200'} rounded-xl p-3">
+      <div class="border-2 border-slate-200 rounded-xl p-3">
         <div class="flex items-center justify-between">
           <div>
-            <div class="font-bold">${isMe ? '⭐ ' : ''}${esc(info.name)}</div>
-            <div class="text-xs text-${c}-600 mt-1">${info.faction === 'good' ? '正義陣營' : '邪惡陣營'}</div>
+            <div class="font-bold">${esc(info.name)}</div>
+            <div class="text-xs ${factionBg} font-bold px-2 py-0.5 rounded mt-1 inline-block">${factionLabel} · ${info.faction === 'good' ? '正義' : '邪惡'}</div>
           </div>
-          ${isMe ? '<span class="text-xs bg-amber-400 text-white px-2 py-1 rounded">你</span>' : ''}
         </div>
         <div class="text-sm text-slate-600 mt-2">${info.desc}</div>
       </div>
@@ -1350,7 +1368,9 @@ function toggleTeamMember(uid) {
 }
 
 async function submitTeam() {
-  await submitTeam();
+  const gs = state.roomData.gameState;
+  const team = (gs.currentTeam && gs.currentTeam.members) || [];
+  await proposeTeam(team);
 }
 
 function leaveRoom() {

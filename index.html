@@ -72,6 +72,52 @@ const ROLE_FACTION = {
   assassin: 'evil', morgana: 'evil', mordred: 'evil', oberon: 'evil',
   good: 'good', evil: 'evil'
 };
+const BOT_NAMES = ['小智','小瑄','小傑','小琳','小勇','小琪','小豪','小雅','小健','小瑜','小佩','小霖'];
+const BOT_NICKNAMES_USED = new Set();
+function getBotNickname() {
+  const available = BOT_NAMES.filter(n => !BOT_NICKNAMES_USED.has(n));
+  const name = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : 'BOT_' + Math.floor(Math.random() * 99);
+  BOT_NICKNAMES_USED.add(name);
+  return name;
+}
+function isBot(uid) {
+  return !!(state.roomData && state.roomData.players && state.roomData.players[uid] && state.roomData.players[uid].isBot);
+}
+function getBotRole(uid) {
+  const gs = state.roomData && state.roomData.gameState;
+  if (!gs || !gs.roleAssignments) return null;
+  const p = state.roomData.players[uid];
+  if (p && p.botVoteRole) return p.botVoteRole;
+  return gs.roleAssignments[uid] || null;
+}
+function botVote() {
+  if (!state.roomData || !state.roomData.meta || !state.roomData.gameState) return;
+  const phase = state.roomData.meta.phase;
+  const gs = state.roomData.gameState;
+  if (phase === 'stage3') {
+    // 表決階段：檢查自己是否在 currentTeam 且未投票
+    const myUid = state.uid;
+    if (!isBot(myUid)) return;
+    if (gs.currentVotes && gs.currentVotes[myUid]) return; // 已投票
+    const team = gs.currentTeam && gs.currentTeam.members;
+    if (!team || !team.includes(myUid)) return; // 不在隊伍
+    const vote = Math.random() < 0.5 ? 'approve' : 'reject';
+    db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + myUid).set(vote).then(() => castVote(vote));
+  } else if (phase === 'stage4') {
+    // 任務階段：檢查自己是否在 currentTeam 且未投票
+    const myUid = state.uid;
+    if (!isBot(myUid)) return;
+    if (gs.missionVotes && gs.missionVotes[myUid]) return; // 已投票
+    const team = gs.currentTeam && gs.currentTeam.members;
+    if (!team || !team.includes(myUid)) return; // 不在隊伍
+    const role = getBotRole(myUid);
+    let success = true;
+    if (role && ROLE_FACTION[role] === 'evil') {
+      success = Math.random() < 0.7; // 70% 成功、30% 失敗（壞人策略）
+    }
+    db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + myUid).set(success ? 'success' : 'fail').then(() => castMissionVote(success));
+  }
+}
 
 // ============================================================
 // App State
@@ -125,7 +171,7 @@ function playersOrdered(roomData) {
   if (!roomData || !roomData.players) return [];
   return Object.entries(roomData.players)
     .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0))
-    .map(([uid, p]) => ({ uid, ...p }));
+    .map(([uid, p]) => ({ uid, ...p, isBot: !!p.isBot }));
 }
 function playerCount(roomData) {
   return roomData && roomData.players ? Object.keys(roomData.players).length : 0;
@@ -551,16 +597,20 @@ function renderRoom(app) {
   const phase = state.roomData.meta.phase;
   const locked = state.roomData.meta.locked;
 
-  const playersHtml = players.map(p => `
+  const playersHtml = players.map(p => {
+    const offline = p.online === false || (p.isBot && !p.online);
+    return `
     <div class="flex items-center justify-between py-2 px-3 bg-slate-50 rounded-lg">
       <div class="flex items-center gap-2">
         ${p.isHost ? '<span class="text-amber-500">⭐</span>' : '<span class="w-4"></span>'}
-        <span class="font-medium">${esc(p.nickname)}</span>
+        ${p.isBot ? '<span class="text-lg">🤖</span>' : '<span class="w-5"></span>'}
+        <span class="font-medium ${p.isBot ? 'text-slate-600' : ''}">${esc(p.nickname)}${p.isBot ? '（電腦）' : ''}</span>
         ${p.isHost ? '<span class="text-xs text-slate-500">（房主）</span>' : ''}
+        ${p.isBot && state.isHost ? `<button onclick="removeBot('${p.uid}')" class="text-xs text-rose-400 ml-1">✕</button>` : ''}
       </div>
-      <div class="text-xs ${p.online ? 'text-emerald-500' : 'text-slate-400'}">${p.online ? '在線' : '離線'}</div>
+      <div class="text-xs ${offline ? 'text-slate-400' : 'text-emerald-500'}">${offline ? '離線' : '在線'}</div>
     </div>
-  `).join('');
+  `}).join('');
 
   let body = '';
   if (phase === 'lobby') {
@@ -572,7 +622,10 @@ function renderRoom(app) {
           <div class="text-xs text-amber-700 mt-1">把代碼 + 房東密碼傳給朋友</div>
         </div>
         <div>
-          <div class="text-sm text-slate-500 mb-2">玩家 (${count}/10)</div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm text-slate-500">玩家 (${count}/10)</div>
+            ${state.isHost && count < 10 ? '<button onclick="addBotPlayer()" class="text-xs bg-emerald-500 text-white px-3 py-1 rounded-lg active:scale-95">＋電腦玩家</button>' : ''}
+          </div>
           <div class="space-y-1">${playersHtml}</div>
         </div>
         ${state.isHost ? `
@@ -1384,22 +1437,84 @@ function leaveRoom() {
   state.view = 'landing';
   render();
 }
+async function addBotPlayer() {
+  if (!state.isHost) return;
+  const count = Object.keys(state.roomData.players).length;
+  if (count >= 10) { toast('已達人數上限 10 人'); return; }
+  const nick = getBotNickname();
+  const uid = 'bot_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  await db.ref('rooms/' + state.roomCode + '/players/' + uid).set({
+    nickname: nick,
+    isHost: false,
+    online: true,
+    isBot: true,
+    joinedAt: Date.now()
+  });
+}
+async function removeBot(uid) {
+  if (!state.isHost) return;
+  const p = state.roomData && state.roomData.players && state.roomData.players[uid];
+  if (!p || !p.isBot) return;
+  await db.ref('rooms/' + state.roomCode + '/players/' + uid).remove();
+  if (BOT_NICKNAMES_USED.has(p.nickname)) BOT_NICKNAMES_USED.delete(p.nickname);
+}
+async function createDisconnectBot(oldUid) {
+  const count = Object.keys(state.roomData.players).length;
+  if (count >= 10) return;
+  const oldPlayer = state.roomData.players[oldUid];
+  if (!oldPlayer || oldPlayer.isBot) return; // 已是 BOT 或已不存在
+  const nick = getBotNickname();
+  const uid = 'bot_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const gs = state.roomData.gameState;
+  const botVoteRole = (gs && gs.roleAssignments) ? gs.roleAssignments[oldUid] : null;
+  await db.ref('rooms/' + state.roomCode + '/players/' + uid).set({
+    nickname: nick,
+    isHost: false,
+    online: true,
+    isBot: true,
+    botVoteRole: botVoteRole,
+    joinedAt: Date.now()
+  });
+  // 如果該玩家在 currentTeam，更新成 BOT UID
+  if (gs && gs.currentTeam && gs.currentTeam.members && gs.currentTeam.members.includes(oldUid)) {
+    const members = gs.currentTeam.members.map(m => m === oldUid ? uid : m);
+    await db.ref('rooms/' + state.roomCode + '/gameState/currentTeam/members').set(members);
+  }
+  // 如果該玩家是 leader，更新 leader
+  if (gs && gs.leaderUid === oldUid) {
+    await db.ref('rooms/' + state.roomCode + '/gameState/leaderUid').set(uid);
+  }
+}
 
 // ============================================================
 // Firebase Listeners
 // ============================================================
 let roomRef = null;
+let botVoteTimers = {}; // uid -> timeout id
+function clearBotVoteTimers() { Object.values(botVoteTimers).forEach(t => clearTimeout(t)); botVoteTimers = {}; }
+
 function attachRoomListener() {
   if (roomRef) roomRef.off();
   roomRef = db.ref('rooms/' + state.roomCode);
   roomRef.on('value', snap => {
     const data = snap.val();
     if (!data) {
-      // 房間被刪
       toast('房間已被刪除');
       leaveRoom();
       return;
     }
+
+    // 斷線檢測：如果任何人（包括自己）斷線了，在遊戲中自動建立 BOT 接手
+    if (data.meta && data.meta.phase && ['stage1','stage2','stage3','stage4','stage5','stage6'].includes(data.meta.phase)) {
+      const players = data.players || {};
+      for (const [uid, p] of Object.entries(players)) {
+        if (p.online === false && !p.isBot) {
+          // 玩家斷線且還沒變成 BOT，建立 BOT 接手
+          createDisconnectBot(uid);
+        }
+      }
+    }
+
     state.roomData = data;
     if (data.meta && data.meta.phase && ['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(data.meta.phase)) {
       state.view = 'room';
@@ -1410,6 +1525,40 @@ function attachRoomListener() {
     }
     if (state.roleModalOpen) renderRoleModal();
     else render();
+    // 触发 BOT 自動投票
+    clearBotVoteTimers();
+    if (data.meta && ['stage3','stage4'].includes(data.meta.phase)) {
+      Object.keys(data.players || {}).forEach(uid => {
+        if (uid === state.uid) return; // 自己不處理
+        const p = data.players[uid];
+        if (!p.isBot) return;
+        const gs = data.gameState || {};
+        // 表決階段
+        if (data.meta.phase === 'stage3') {
+          const team = gs.currentTeam && gs.currentTeam.members;
+          const voted = gs.currentVotes && gs.currentVotes[uid];
+          if (team && team.includes(uid) && !voted) {
+            botVoteTimers[uid] = setTimeout(() => {
+              const vote = Math.random() < 0.5 ? 'approve' : 'reject';
+              db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
+            }, 800 + Math.random() * 1200);
+          }
+        }
+        // 任務階段
+        if (data.meta.phase === 'stage4') {
+          const team = gs.currentTeam && gs.currentTeam.members;
+          const voted = gs.missionVotes && gs.missionVotes[uid];
+          if (team && team.includes(uid) && !voted) {
+            botVoteTimers[uid] = setTimeout(() => {
+              const role = p.botVoteRole || (gs.roleAssignments && gs.roleAssignments[uid]) || null;
+              let success = true;
+              if (role && ROLE_FACTION[role] === 'evil') success = Math.random() < 0.7;
+              db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(success ? 'success' : 'fail');
+            }, 800 + Math.random() * 1200);
+          }
+        }
+      });
+    }
   });
   // 在線狀態
   const presenceRef = db.ref('rooms/' + state.roomCode + '/players/' + state.uid + '/online');

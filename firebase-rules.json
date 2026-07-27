@@ -1,0 +1,51 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomCode": {
+        ".read": "auth != null",
+        "meta": {
+          ".write": "auth != null && (!data.exists() || data.child('hostUid').val() === auth.uid)"
+        },
+        "players": {
+          "$uid": {
+            ".read": "auth != null",
+            ".write": "auth != null && (auth.uid === $uid || (data.exists() && data.parent().parent().child('meta').child('hostUid').val() === auth.uid) || (!data.exists() && newData.child('isHost').val() === true && newData.child('hostPassword').val() != null))",
+            ".validate": "newData.hasChildren(['nickname'])"
+          }
+        },
+        "hostPassword": {
+          ".read": false,
+          ".write": "auth != null && (!data.exists() || root.child('rooms').child($roomCode).child('meta').child('hostUid').val() === auth.uid)"
+        },
+        "gameConfig": {
+          ".read": "auth != null",
+          ".write": "auth != null && root.child('rooms').child($roomCode).child('meta').child('hostUid').val() === auth.uid"
+        },
+        "gameState": {
+          ".read": "auth != null",
+          "currentVotes": {
+            "$uid": {
+              ".write": "auth != null && auth.uid === $uid"
+            }
+          },
+          "missionVotes": {
+            "$mission": {
+              "$uid": {
+                ".write": "auth != null && auth.uid === $uid"
+              }
+            }
+          },
+          "currentTeam": {
+            ".write": "auth != null && root.child('rooms').child($roomCode).child('meta').child('hostUid').val() === auth.uid"
+          },
+          "ladyChoice": {
+            ".write": "auth != null && auth.uid === root.child('rooms').child($roomCode).child('gameState').child('ladyHolderUid').val()"
+          },
+          "assassinationTarget": {
+            ".write": "auth != null && root.child('rooms').child($roomCode).child('gameState').child('roleAssignments').child(auth.uid).val() === 'assassin'"
+          }
+        }
+      }
+    }
+  }
+}

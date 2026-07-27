@@ -1,0 +1,1324 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Avalon Online</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-auth-compat.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", sans-serif; }
+  .hide-scroll::-webkit-scrollbar { display: none; }
+  .press-hold { user-select: none; -webkit-user-select: none; }
+  @keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.7); } 100% { box-shadow: 0 0 0 12px rgba(250, 204, 21, 0); } }
+  .pulse { animation: pulse-ring 1.5s infinite; }
+  .modal-bg { background: rgba(0,0,0,0.5); }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+<div id="app" class="max-w-md mx-auto min-h-screen pb-20"></div>
+<div id="modal-root"></div>
+
+<script>
+// ============================================================
+// Firebase Config
+// ============================================================
+const firebaseConfig = {
+  apiKey: "AIzaSy…iJ9U",
+  authDomain: "avalon-online-5ebd4.firebaseapp.com",
+  databaseURL: "https://avalon-online-5ebd4-default-rtdb.firebaseio.com",
+  projectId: "avalon-online-5ebd4",
+  storageBucket: "avalon-online-5ebd4.firebasestorage.app",
+  messagingSenderId: "942017471060",
+  appId: "1:942017471060:web:b544efa951de456c9f03c1"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.database();
+
+// ============================================================
+// Constants
+// ============================================================
+const FACTION_TABLE = {
+  5: { good: 3, evil: 2 },
+  6: { good: 4, evil: 2 },
+  7: { good: 4, evil: 3 },
+  8: { good: 5, evil: 3 },
+  9: { good: 6, evil: 3 },
+  10: { good: 6, evil: 4 }
+};
+const MISSION_CONFIG = {
+  5:  { sizes: [2, 3, 2, 3, 3], doubleFailMission: 4 },
+  6:  { sizes: [2, 3, 4, 3, 4], doubleFailMission: 4 },
+  7:  { sizes: [2, 3, 3, 4, 4], doubleFailMission: 4 },
+  8:  { sizes: [3, 4, 4, 5, 5], doubleFailMission: 4 },
+  9:  { sizes: [3, 4, 4, 5, 5], doubleFailMission: 4 },
+  10: { sizes: [3, 4, 4, 5, 5], doubleFailMission: 4 }
+};
+const ROLE_INFO = {
+  merlin:   { name: '梅林',     faction: 'good', desc: '看到所有壞人（除了莫德雷德）' },
+  percival: { name: '派西維爾', faction: 'good', desc: '看到梅林和莫甘娜（不分清楚）' },
+  assassin: { name: '刺客',     faction: 'evil', desc: '遊戲結束可刺殺梅林，刺中紅營勝' },
+  morgana:  { name: '莫甘娜',   faction: 'evil', desc: '對派西維爾假扮梅林' },
+  mordred:  { name: '莫德雷德', faction: 'evil', desc: '梅林看不到的紅營老大' },
+  oberon:   { name: '奧伯倫',   faction: 'evil', desc: '不認識其他壞人，其他人也不認識他' },
+  good:     { name: '忠誠',     faction: 'good', desc: '亞瑟的忠誠僕從' },
+  evil:     { name: '爪牙',     faction: 'evil', desc: '莫德雷德的爪牙' }
+};
+const ROLE_FACTION = {
+  merlin: 'good', percival: 'good',
+  assassin: 'evil', morgana: 'evil', mordred: 'evil', oberon: 'evil',
+  good: 'good', evil: 'evil'
+};
+
+// ============================================================
+// App State
+// ============================================================
+const state = {
+  uid: null,
+  view: 'loading',
+  roomCode: null,
+  roomData: null,
+  myData: null,
+  ready: false,
+  roleModalOpen: false,
+  roleCardRevealed: false,
+  pressTimer: null,
+  errorMsg: ''
+};
+
+// ============================================================
+// Utilities
+// ============================================================
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'fixed top-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-4 py-2 rounded shadow-lg z-50 text-sm';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+function playersOrdered(roomData) {
+  if (!roomData || !roomData.players) return [];
+  return Object.entries(roomData.players)
+    .sort((a, b) => (a[1].joinedAt || 0) - (b[1].joinedAt || 0))
+    .map(([uid, p]) => ({ uid, ...p }));
+}
+function playerCount(roomData) {
+  return roomData && roomData.players ? Object.keys(roomData.players).length : 0;
+}
+function getLeaderUid(roomData) {
+  if (!roomData || !roomData.gameState) return null;
+  return roomData.gameState.leaderUid;
+}
+function isMyTurnToAct(roomData) {
+  if (!state.uid || !roomData || !roomData.gameState) return false;
+  return roomData.gameState.leaderUid === state.uid;
+}
+function factionLabel(f) {
+  return f === 'good' ? '好人' : '壞人';
+}
+function factionColor(f) {
+  return f === 'good' ? 'blue' : 'red';
+}
+
+// ============================================================
+// Role Assignment Logic
+// ============================================================
+function getSpecialRoles(config) {
+  const roles = ['merlin', 'assassin'];
+  if (config.roles.percival) roles.push('percival');
+  if (config.roles.morgana) roles.push('morgana');
+  if (config.roles.mordred) roles.push('mordred');
+  if (config.roles.oberon) roles.push('oberon');
+  return roles;
+}
+function assignRoles(playerUids, config) {
+  const { good: goodCount, evil: evilCount } = FACTION_TABLE[playerUids.length];
+  const special = getSpecialRoles(config);
+  const goodSpecial = special.filter(r => ROLE_FACTION[r] === 'good');
+  const evilSpecial = special.filter(r => ROLE_FACTION[r] === 'evil');
+  while (goodSpecial.length < goodCount) goodSpecial.push('good');
+  while (evilSpecial.length < evilCount) evilSpecial.push('evil');
+  const shuffledGood = shuffle(goodSpecial).slice(0, goodCount);
+  const shuffledEvil = shuffle(evilSpecial).slice(0, evilCount);
+  const shuffledPlayers = shuffle(playerUids);
+  const assignments = {};
+  shuffledPlayers.forEach((uid, i) => {
+    if (i < goodCount) assignments[uid] = shuffledGood[i];
+    else assignments[uid] = shuffledEvil[i - goodCount];
+  });
+  return assignments;
+}
+function generateInitialInfo(assignments, playerUids) {
+  const info = {};
+  for (const uid of playerUids) {
+    const myRole = assignments[uid];
+    info[uid] = { sees: [], seeType: null };
+    if (myRole === 'merlin') {
+      for (const other of playerUids) {
+        if (other === uid) continue;
+        const or = assignments[other];
+        if (or === 'mordred') continue;
+        if (ROLE_FACTION[or] === 'evil') info[uid].sees.push(other);
+      }
+      info[uid].seeType = 'evil';
+    } else if (myRole === 'percival') {
+      for (const other of playerUids) {
+        if (other === uid) continue;
+        const or = assignments[other];
+        if (or === 'merlin' || or === 'morgana') info[uid].sees.push(other);
+      }
+      info[uid].seeType = 'merlin_candidates';
+    } else if (ROLE_FACTION[myRole] === 'evil' && myRole !== 'oberon') {
+      for (const other of playerUids) {
+        if (other === uid) continue;
+        const or = assignments[other];
+        if (or === 'oberon') continue;
+        if (ROLE_FACTION[or] === 'evil') info[uid].sees.push(other);
+      }
+      info[uid].seeType = 'evil';
+    }
+  }
+  return info;
+}
+
+// ============================================================
+// Game Logic — State Transitions
+// ============================================================
+async function startGame() {
+  const r = db.ref('rooms/' + state.roomCode);
+  const playerUids = Object.keys(state.roomData.players);
+  const assignments = assignRoles(playerUids, state.roomData.gameConfig);
+  const initialInfo = generateInitialInfo(assignments, playerUids);
+  const firstLeader = playerUids[0];
+  const playerCount = playerUids.length;
+  const ladyOn = !!state.roomData.gameConfig.roles.ladyOfLake;
+  await r.update({
+    'meta/phase': 'stage1',
+    'meta/locked': true,
+    'gameState/mission': 1,
+    'gameState/rejections': 0,
+    'gameState/leaderUid': firstLeader,
+    'gameState/leaderHistory': [firstLeader],
+    'gameState/roleAssignments': assignments,
+    'gameState/initialInfo': initialInfo,
+    'gameState/ladyHolderUid': ladyOn ? firstLeader : null,
+    'gameState/ladyHistory': ladyOn ? [firstLeader] : [],
+    'gameState/missionVotes': {},
+    'gameState/currentTeam': null,
+    'gameState/currentVotes': null,
+    'gameState/assassinationTarget': null
+  });
+}
+async function proposeTeam(memberUids) {
+  const r = db.ref('rooms/' + state.roomCode);
+  await r.update({
+    'gameState/currentTeam': { members: memberUids, proposedAt: Date.now() },
+    'gameState/currentVotes': null
+  });
+  await r.child('meta/phase').set('stage3');
+}
+async function castVote(vote) {
+  const r = db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + state.uid);
+  await r.set(vote);
+}
+async function submitTeam() {
+  // currentTeam already set, just move to stage3
+  const r = db.ref('rooms/' + state.roomCode);
+  await r.child('meta/phase').set('stage3');
+  await r.child('gameState/currentVotes').set(null);
+}
+async function finishVoting() {
+  const r = db.ref('rooms/' + state.roomCode);
+  const snap = await r.child('gameState/currentVotes').once('value');
+  const votes = snap.val() || {};
+  const approve = Object.values(votes).filter(v => v === 'approve').length;
+  const reject = Object.values(votes).filter(v => v === 'reject').length;
+  const team = state.roomData.gameState.currentTeam.members;
+
+  if (reject >= approve) {
+    // 否決
+    const newRej = (state.roomData.gameState.rejections || 0) + 1;
+    if (newRej >= 5) {
+      await r.update({
+        'gameState/rejections': newRej,
+        'meta/phase': 'over',
+        'meta/winner': 'evil',
+        'meta/winReason': 'rejections_5'
+      });
+      return;
+    }
+    // 換下一位隊長
+    const players = playersOrdered(state.roomData);
+    const idx = players.findIndex(p => p.uid === state.roomData.gameState.leaderUid);
+    const nextIdx = (idx + 1) % players.length;
+    const newLeader = players[nextIdx].uid;
+    const newHist = [...(state.roomData.gameState.leaderHistory || []), newLeader];
+    await r.update({
+      'gameState/rejections': newRej,
+      'gameState/leaderUid': newLeader,
+      'gameState/leaderHistory': newHist,
+      'gameState/currentTeam': null,
+      'gameState/currentVotes': null,
+      'meta/phase': 'stage2'
+    });
+  } else {
+    // 通過，進任務
+    await r.update({
+      'gameState/rejections': 0,
+      'meta/phase': 'stage4',
+      'gameState/missionVotes': {}
+    });
+  }
+}
+async function castMissionVote(success) {
+  const r = db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + state.uid);
+  await r.set(success ? 'success' : 'fail');
+}
+async function finishMission() {
+  const r = db.ref('rooms/' + state.roomCode);
+  const gs = state.roomData.gameState;
+  const mission = gs.mission;
+  const playerCount = Object.keys(state.roomData.players).length;
+  const team = gs.currentTeam.members;
+  const snap = await r.child('gameState/missionVotes').once('value');
+  const votes = snap.val() || {};
+  const successCount = Object.values(votes).filter(v => v === 'success').length;
+  const failCount = Object.values(votes).filter(v => v === 'fail').length;
+
+  // 第 4 關雙失敗票
+  let actualFail = failCount;
+  const doubleFail = MISSION_CONFIG[playerCount].doubleFailMission === mission;
+  if (doubleFail && failCount >= 2) actualFail = 2;
+  if (doubleFail && failCount === 1) actualFail = 0;  // 1 票不算失敗
+  const isSuccess = actualFail === 0;
+
+  const results = state.roomData.gameState.missionResults || {};
+  results[mission] = { success: successCount, fail: failCount, voters: team };
+  await r.child('gameState/missionResults').set(results);
+
+  // 累積勝場
+  let goodWin = 0, evilWin = 0;
+  for (let i = 1; i <= mission; i++) {
+    if (results[i] && MISSION_CONFIG[playerCount].doubleFailMission === i) {
+      // 雙失敗票
+      evilWin += (results[i].fail >= 2) ? 1 : 0;
+      goodWin += (results[i].fail < 2) ? 1 : 0;
+    } else {
+      evilWin += (results[i] && results[i].fail > 0) ? 1 : 0;
+      goodWin += (results[i] && results[i].fail === 0) ? 1 : 0;
+    }
+  }
+
+  if (evilWin >= 3) {
+    await r.update({ 'meta/phase': 'over', 'meta/winner': 'evil', 'meta/winReason': 'missions_3_evil' });
+    return;
+  }
+  if (goodWin >= 3) {
+    await r.update({ 'meta/phase': 'stage6', 'meta/winner': null });
+    return;
+  }
+  // 觸發女神？
+  const ladyOn = state.roomData.gameConfig.roles.ladyOfLake;
+  if (ladyOn && [2, 3, 4].includes(mission)) {
+    await r.update({ 'meta/phase': 'stage5' });
+    return;
+  }
+  // 換隊長，進下一關
+  await nextMissionOrLeader();
+}
+async function nextMissionOrLeader() {
+  const r = db.ref('rooms/' + state.roomCode);
+  const gs = state.roomData.gameState;
+  const players = playersOrdered(state.roomData);
+  // 第 5 關或中間換隊長
+  if (gs.mission >= 5) {
+    // 理論上不會到這（5 關會贏）
+    return;
+  }
+  const idx = players.findIndex(p => p.uid === gs.leaderUid);
+  const nextIdx = (idx + 1) % players.length;
+  const newLeader = players[nextIdx].uid;
+  const newHist = [...(gs.leaderHistory || []), newLeader];
+  await r.update({
+    'gameState/mission': gs.mission + 1,
+    'gameState/leaderUid': newLeader,
+    'gameState/leaderHistory': newHist,
+    'gameState/currentTeam': null,
+    'gameState/currentVotes': null,
+    'meta/phase': 'stage2'
+  });
+}
+async function checkLady(targetUid) {
+  const r = db.ref('rooms/' + state.roomCode);
+  const gs = state.roomData.gameState;
+  const targetRole = gs.roleAssignments[targetUid];
+  const targetFaction = ROLE_FACTION[targetRole];
+
+  // 寫入女神持有者的查驗結果（只本人看得到，後面 stage5 顯示）
+  const info = gs.initialInfo || {};
+  info[gs.ladyHolderUid] = { sees: [targetUid], seeType: 'alignment', result: targetFaction };
+
+  // 女神標記轉移
+  const newHist = [...(gs.ladyHistory || []), targetUid];
+
+  await r.update({
+    'gameState/initialInfo': info,
+    'gameState/ladyHolderUid': targetUid,
+    'gameState/ladyHistory': newHist
+  });
+
+  // 換隊長、進下一關
+  const players = playersOrdered(state.roomData);
+  const idx = players.findIndex(p => p.uid === gs.leaderUid);
+  const nextIdx = (idx + 1) % players.length;
+  const newLeader = players[nextIdx].uid;
+  const newHist2 = [...(gs.leaderHistory || []), newLeader];
+  await r.update({
+    'gameState/leaderUid': newLeader,
+    'gameState/leaderHistory': newHist2,
+    'gameState/currentTeam': null,
+    'gameState/currentVotes': null,
+    'meta/phase': 'stage2'
+  });
+}
+async function assassinate(targetUid) {
+  const r = db.ref('rooms/' + state.roomCode);
+  const targetRole = state.roomData.gameState.roleAssignments[targetUid];
+  const hit = targetRole === 'merlin';
+  await r.update({
+    'gameState/assassinationTarget': targetUid,
+    'meta/phase': 'over',
+    'meta/winner': hit ? 'evil' : 'good',
+    'meta/winReason': hit ? 'assassin_hit' : 'assassin_miss'
+  });
+}
+async function backToLobby() {
+  const r = db.ref('rooms/' + state.roomCode);
+  await r.update({
+    'meta/phase': 'lobby',
+    'meta/locked': false,
+    'meta/winner': null,
+    'meta/winReason': null,
+    'gameConfig': null,
+    'gameState': null
+  });
+}
+
+// ============================================================
+// View Renderers
+// ============================================================
+function renderHeader() {
+  const phase = state.roomData && state.roomData.meta && state.roomData.meta.phase;
+  if (!phase || !['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(phase)) return '';
+  const gs = state.roomData.gameState || {};
+  const playerCount = Object.keys(state.roomData.players).length;
+  const sizes = MISSION_CONFIG[playerCount].sizes;
+  const mission = gs.mission || 1;
+  const results = gs.missionResults || {};
+  const rejections = gs.rejections || 0;
+
+  let circles = '';
+  for (let i = 1; i <= 5; i++) {
+    const r = results[i];
+    let cls = 'w-8 h-8 rounded-full border-2 flex items-center justify-center text-xs font-bold ';
+    let label = '';
+    if (r) {
+      if (r.fail > 0) {
+        cls += 'bg-rose-500 border-rose-600 text-white';
+        label = '✗' + r.fail;
+      } else {
+        cls += 'bg-sky-500 border-sky-600 text-white';
+        label = '✓' + r.success;
+      }
+    } else if (i === mission) {
+      cls += 'border-amber-400 text-amber-600 pulse';
+      label = sizes[i-1];
+    } else if (i < mission) {
+      cls += 'border-slate-300 text-slate-400';
+      label = sizes[i-1];
+    } else {
+      cls += 'border-slate-300 text-slate-500';
+      label = sizes[i-1];
+    }
+    circles += `<div class="${cls}">${label}</div>`;
+  }
+
+  const rejColor = rejections >= 4 ? 'text-rose-600 font-bold' : 'text-slate-600';
+
+  return `
+    <div class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-3 py-2 flex items-center justify-between">
+      <div class="flex items-center gap-1">${circles}</div>
+      <div class="${rejColor} text-sm">❌${rejections}/5</div>
+      <button onclick="openRoleModal()" class="px-3 py-1 bg-slate-100 rounded-lg text-sm font-medium">📖</button>
+    </div>
+  `;
+}
+
+function renderLoading(app) {
+  app.innerHTML = `<div class="flex items-center justify-center min-h-screen"><div class="text-slate-500">載入中...</div></div>`;
+}
+
+function renderLanding(app) {
+  app.innerHTML = `
+    <div class="min-h-screen flex flex-col items-center justify-center p-6 gap-6">
+      <div class="text-6xl">🏰</div>
+      <h1 class="text-3xl font-bold">Avalon Online</h1>
+      <p class="text-slate-500 text-sm">朋友限定 · 連線版</p>
+      <div class="w-full max-w-xs flex flex-col gap-3 mt-8">
+        <button onclick="goCreate()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold shadow-lg active:scale-95 transition">創建房間</button>
+        <button onclick="goJoin()" class="w-full bg-white border-2 border-indigo-600 text-indigo-600 py-4 rounded-xl text-lg font-bold active:scale-95 transition">加入房間</button>
+      </div>
+      <div class="text-xs text-slate-400 mt-12">v1.0</div>
+    </div>
+  `;
+}
+
+function renderCreate(app) {
+  app.innerHTML = `
+    <div class="p-6">
+      <button onclick="goLanding()" class="text-slate-500 mb-4">← 返回</button>
+      <h2 class="text-2xl font-bold mb-6">創建房間</h2>
+      <div class="flex flex-col gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">你的暱稱</label>
+          <input id="create-nick" class="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-indigo-500 outline-none" placeholder="例如：小明">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">房東密碼 <span class="text-slate-400 font-normal">（朋友加入用）</span></label>
+          <input id="create-pwd" type="password" class="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-indigo-500 outline-none" placeholder="至少 4 字">
+        </div>
+        ${state.errorMsg ? `<div class="text-rose-600 text-sm">${esc(state.errorMsg)}</div>` : ''}
+        <button onclick="doCreate()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold mt-4 active:scale-95">創建</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderJoin(app) {
+  app.innerHTML = `
+    <div class="p-6">
+      <button onclick="goLanding()" class="text-slate-500 mb-4">← 返回</button>
+      <h2 class="text-2xl font-bold mb-6">加入房間</h2>
+      <div class="flex flex-col gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">房間代碼</label>
+          <input id="join-code" class="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-indigo-500 outline-none uppercase" placeholder="ABC123" maxlength="6">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">你的暱稱</label>
+          <input id="join-nick" class="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-indigo-500 outline-none" placeholder="例如：小華">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-700 mb-1">房東密碼</label>
+          <input id="join-pwd" type="password" class="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-indigo-500 outline-none">
+        </div>
+        ${state.errorMsg ? `<div class="text-rose-600 text-sm">${esc(state.errorMsg)}</div>` : ''}
+        <button onclick="doJoin()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold mt-4 active:scale-95">加入</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRoom(app) {
+  const players = playersOrdered(state.roomData);
+  const count = players.length;
+  const canStart = count >= 5;
+  const phase = state.roomData.meta.phase;
+  const locked = state.roomData.meta.locked;
+
+  const playersHtml = players.map(p => `
+    <div class="flex items-center justify-between py-2 px-3 bg-slate-50 rounded-lg">
+      <div class="flex items-center gap-2">
+        ${p.isHost ? '<span class="text-amber-500">⭐</span>' : '<span class="w-4"></span>'}
+        <span class="font-medium">${esc(p.nickname)}</span>
+        ${p.isHost ? '<span class="text-xs text-slate-500">（房主）</span>' : ''}
+      </div>
+      <div class="text-xs ${p.online ? 'text-emerald-500' : 'text-slate-400'}">${p.online ? '在線' : '離線'}</div>
+    </div>
+  `).join('');
+
+  let body = '';
+  if (phase === 'lobby') {
+    body = `
+      <div class="space-y-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div class="text-sm text-amber-800 font-medium mb-1">📋 房間資訊</div>
+          <div class="text-xs text-amber-700">代碼：<span class="font-mono font-bold">${state.roomCode}</span></div>
+          <div class="text-xs text-amber-700 mt-1">把代碼 + 房東密碼傳給朋友</div>
+        </div>
+        <div>
+          <div class="text-sm text-slate-500 mb-2">玩家 (${count}/10)</div>
+          <div class="space-y-1">${playersHtml}</div>
+        </div>
+        ${state.isHost ? `
+          <div class="pt-4 border-t">
+            <div class="text-xs text-slate-500 mb-2 text-center">—— 房主專用 ——</div>
+            <button onclick="doStart()" ${canStart ? '' : 'disabled'} class="w-full ${canStart ? 'bg-indigo-600' : 'bg-slate-300'} text-white py-4 rounded-xl text-lg font-bold ${canStart ? 'active:scale-95' : 'cursor-not-allowed'}">開始遊戲（5+）</button>
+            ${!canStart ? '<div class="text-xs text-slate-400 text-center mt-2">還需要 ' + (5 - count) + ' 人</div>' : ''}
+          </div>
+        ` : `
+          <div class="text-center text-slate-500 text-sm py-4">等待房主開始遊戲...</div>
+        `}
+      </div>
+    `;
+  } else if (phase === 'roleConfig') {
+    body = renderRoleConfigBody();
+  } else if (['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(phase)) {
+    body = renderStageBody(phase);
+  }
+
+  app.innerHTML = `
+    <div class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-3 py-2 flex items-center justify-between">
+      <div class="text-sm font-mono font-bold">房間: ${state.roomCode}</div>
+      <button onclick="leaveRoom()" class="text-rose-500 text-sm font-medium">離開</button>
+    </div>
+    <div class="p-4">${renderHeader() ? '' : ''}${body}</div>
+  `;
+}
+
+function renderRoleConfigBody() {
+  const cfg = state.roomData.gameConfig || { roles: { merlin: true, assassin: true, percival: false, morgana: false, mordred: false, oberon: false, ladyOfLake: false } };
+  const roles = cfg.roles;
+  const players = playersOrdered(state.roomData);
+  const count = players.length;
+  const valid = count >= 5 && count <= 10;
+  const playersHtml = players.map(p => `<span class="inline-block bg-slate-100 px-2 py-1 rounded text-sm">${p.isHost ? '⭐' : ''}${esc(p.nickname)}</span>`).join('');
+
+  return `
+    <div class="space-y-4">
+      <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+        <div class="text-sm font-bold text-indigo-900 mb-1">設定本局角色</div>
+        <div class="text-xs text-indigo-700">房主勾選、其他人看得到（透明）</div>
+      </div>
+      <div class="bg-white border-2 border-slate-200 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-sm">☑ 派西維爾</span>
+          <span class="text-xs text-slate-500">💡成對角色</span>
+        </div>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-role="percival" ${roles.percival ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('percival', this.checked)">
+          <span class="text-sm">啟用派西維爾（會自動帶莫甘娜）</span>
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-role="morgana" ${roles.morgana ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('morgana', this.checked)">
+          <span class="text-sm">啟用莫甘娜（會自動帶派西維爾）</span>
+        </label>
+        <hr>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-role="mordred" ${roles.mordred ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('mordred', this.checked)">
+          <span class="text-sm">啟用莫德雷德（梅林看不到的紅營老大）</span>
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-role="oberon" ${roles.oberon ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('oberon', this.checked)">
+          <span class="text-sm">啟用奧伯倫（不認識隊友的紅營孤臣）</span>
+        </label>
+        <label class="flex items-center gap-2">
+          <input type="checkbox" data-role="ladyOfLake" ${roles.ladyOfLake ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('ladyOfLake', this.checked)">
+          <span class="text-sm">啟用湖中女神（驗人神器）</span>
+        </label>
+        <div class="text-xs text-slate-500 pt-2 border-t">梅林 + 刺客 固定啟用</div>
+      </div>
+      <div>
+        <div class="text-sm text-slate-500 mb-2">玩家 (${count})</div>
+        <div class="flex flex-wrap gap-2">${playersHtml}</div>
+      </div>
+      ${state.isHost ? `
+        <div class="pt-4 border-t">
+          <button onclick="doConfirmRoles()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold active:scale-95">確認並開始</button>
+        </div>
+      ` : `
+        <div class="text-center text-slate-500 text-sm py-4">等待房主確認角色...</div>
+      `}
+    </div>
+  `;
+}
+
+function renderStageBody(phase) {
+  const gs = state.roomData.gameState || {};
+  const playerCount = Object.keys(state.roomData.players).length;
+  const sizes = MISSION_CONFIG[playerCount].sizes;
+  const mission = gs.mission || 1;
+  const teamSize = sizes[mission - 1];
+  const myRole = (gs.roleAssignments || {})[state.uid];
+  const myInfo = (gs.initialInfo || {})[state.uid];
+  const isLeader = gs.leaderUid === state.uid;
+  const team = (gs.currentTeam || {}).members || [];
+  const votes = gs.currentVotes || {};
+  const missionVotes = gs.missionVotes || {};
+  const results = gs.missionResults || {};
+
+  // 計算目前已投票數
+  const allPlayers = playersOrdered(state.roomData);
+  const allUids = allPlayers.map(p => p.uid);
+  const votedCount = Object.keys(votes).length;
+  const missionVotedCount = Object.keys(missionVotes).length;
+
+  let body = '';
+
+  if (phase === 'stage1') {
+    const myVoted = !!myInfo && myInfo.ack;
+    const ackCount = Object.values(gs.initialInfo || {}).filter(i => i.ack).length;
+    const roleInfo = ROLE_INFO[myRole] || ROLE_INFO.good;
+    const factionColor = roleInfo.faction === 'good' ? 'sky' : 'rose';
+
+    let infoHtml = '';
+    if (myInfo && myInfo.seeType === 'evil') {
+      const names = myInfo.sees.map(uid => {
+        const p = state.roomData.players[uid];
+        return p ? p.nickname : '?';
+      });
+      infoHtml = `<div class="text-sm text-slate-600 mb-2">你看到的壞人：</div><div class="text-rose-600 font-medium">${names.map(n => '• ' + esc(n)).join('<br>')}</div>`;
+    } else if (myInfo && myInfo.seeType === 'merlin_candidates') {
+      const names = myInfo.sees.map(uid => {
+        const p = state.roomData.players[uid];
+        return p ? p.nickname : '?';
+      });
+      infoHtml = `<div class="text-sm text-slate-600 mb-2">梅林候選人（梅林 + 莫甘娜）：</div><div class="text-indigo-600 font-medium">${names.map(n => '• ' + esc(n)).join('<br>')}</div>`;
+    } else {
+      infoHtml = `<div class="text-sm text-slate-500">普通好人，沒有額外情報</div>`;
+    }
+
+    body = `
+      <div class="space-y-4">
+        <div class="bg-${factionColor}-50 border-2 border-${factionColor}-300 rounded-2xl p-6 text-center">
+          <div class="text-xs text-${factionColor}-700 mb-1">你的角色</div>
+          <div class="text-3xl font-bold text-${factionColor}-900 mb-1">${esc(roleInfo.name)}</div>
+          <div class="text-sm text-${factionColor}-700">${roleInfo.faction === 'good' ? '正義陣營' : '邪惡陣營'}</div>
+        </div>
+        <div class="bg-white border-2 border-slate-200 rounded-2xl p-4">
+          ${infoHtml}
+        </div>
+        <div class="text-xs text-slate-500 text-center">${roleInfo.desc}</div>
+        <button onclick="ackRole()" ${myVoted ? 'disabled' : ''} class="w-full ${myVoted ? 'bg-slate-300' : 'bg-indigo-600'} text-white py-4 rounded-xl text-lg font-bold">
+          ${myVoted ? '✓ 已記住' : '我已記住，進入遊戲'}
+        </button>
+        <div class="text-center text-sm text-slate-500">等待：${ackCount}/${allUids.length}</div>
+      </div>
+    `;
+  } else if (phase === 'stage2') {
+    const currentTeam = gs.currentTeam && gs.currentTeam.members ? gs.currentTeam.members : [];
+    const leader = state.roomData.players[gs.leaderUid];
+    const leaderName = leader ? leader.nickname : '?';
+
+    body = `
+      <div class="space-y-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-amber-900">第 ${mission} 關</div>
+          <div class="text-xs text-amber-700">需要選 ${teamSize} 人 · 隊長：${leaderName}</div>
+        </div>
+        ${currentTeam.length > 0 ? `
+          <div class="bg-white border-2 border-slate-200 rounded-xl p-3">
+            <div class="text-xs text-slate-500 mb-2">已選 (${currentTeam.length}/${teamSize})</div>
+            <div class="flex flex-wrap gap-1">
+              ${currentTeam.map(uid => {
+                const p = state.roomData.players[uid];
+                return `<span class="bg-amber-100 text-amber-800 px-2 py-1 rounded text-sm">${esc(p ? p.nickname : '?')}</span>`;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
+        <div class="space-y-2">
+          ${allPlayers.map(p => {
+            const checked = currentTeam.includes(p.uid);
+            const isLeaderRow = p.uid === gs.leaderUid;
+            return `
+              <label class="flex items-center gap-3 p-3 bg-white border-2 ${checked ? 'border-amber-400' : 'border-slate-200'} rounded-xl ${isLeader ? 'cursor-pointer' : 'cursor-default'}">
+                <input type="checkbox" ${checked ? 'checked' : ''} ${!isLeader ? 'disabled' : ''} onchange="toggleTeamMember('${p.uid}')" class="w-5 h-5">
+                <span class="flex-1">${p.isHost ? '⭐' : ''}${esc(p.nickname)}${p.uid === state.uid ? '（你）' : ''}</span>
+              </label>
+            `;
+          }).join('')}
+        </div>
+        ${isLeader ? `
+          <button onclick="submitTeam()" ${currentTeam.length !== teamSize ? 'disabled' : ''} class="w-full ${currentTeam.length === teamSize ? 'bg-indigo-600' : 'bg-slate-300'} text-white py-4 rounded-xl text-lg font-bold ${currentTeam.length === teamSize ? 'active:scale-95' : 'cursor-not-allowed'}">提交出征名單</button>
+        ` : `
+          <div class="text-center text-slate-500 text-sm py-4">等待隊長提交...</div>
+        `}
+      </div>
+    `;
+  } else if (phase === 'stage3') {
+    const myVote = votes[state.uid];
+    const teamNames = team.map(uid => {
+      const p = state.roomData.players[uid];
+      return p ? p.nickname : '?';
+    }).join('、');
+    const allVoted = votedCount >= allUids.length;
+    const approveCount = Object.values(votes).filter(v => v === 'approve').length;
+    const rejectCount = Object.values(votes).filter(v => v === 'reject').length;
+
+    let resultHtml = '';
+    if (allVoted) {
+      const myVoteText = myVote === 'approve' ? '同意' : myVote === 'reject' ? '反對' : '?';
+      resultHtml = `
+        <div class="bg-white border-2 border-slate-200 rounded-xl p-4">
+          <div class="text-sm font-bold mb-2">表決結果</div>
+          ${allPlayers.map(p => {
+            const v = votes[p.uid];
+            const vLabel = v === 'approve' ? '同意 ✓' : v === 'reject' ? '反對 ✗' : '?';
+            const vColor = v === 'approve' ? 'text-emerald-600' : 'text-rose-600';
+            return `<div class="flex justify-between py-1 text-sm"><span>${p.isHost ? '⭐' : ''}${esc(p.nickname)}</span><span class="${vColor}">${vLabel}</span></div>`;
+          }).join('')}
+          <div class="mt-3 pt-3 border-t text-center font-medium">
+            同意 ${approveCount} vs 反對 ${rejectCount}
+            ${rejectCount >= approveCount ? '<div class="text-rose-600">→ 否決</div>' : '<div class="text-emerald-600">→ 通過</div>'}
+          </div>
+          ${state.isHost || isLeader ? `<button onclick="finishVoting()" class="w-full mt-3 bg-indigo-600 text-white py-3 rounded-xl">繼續</button>` : '<div class="text-center text-slate-500 text-sm mt-2">等待...</div>'}
+        </div>
+      `;
+    }
+
+    body = `
+      <div class="space-y-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-amber-900">出征：${esc(teamNames)}</div>
+          <div class="text-xs text-amber-700 mt-1">第 ${mission} 關</div>
+        </div>
+        ${!allVoted ? `
+          <div class="text-center text-sm text-slate-500">已投票：${votedCount}/${allUids.length}</div>
+          ${!myVote ? `
+            <div class="grid grid-cols-2 gap-3">
+              <button onclick="castVote('approve')" class="bg-emerald-500 text-white py-4 rounded-xl text-lg font-bold active:scale-95">同意</button>
+              <button onclick="castVote('reject')" class="bg-rose-500 text-white py-4 rounded-xl text-lg font-bold active:scale-95">反對</button>
+            </div>
+          ` : `
+            <div class="text-center py-4 bg-slate-50 rounded-xl">
+              <div class="text-sm text-slate-500">你投了：</div>
+              <div class="text-lg font-bold ${myVote === 'approve' ? 'text-emerald-600' : 'text-rose-600'}">${myVote === 'approve' ? '同意' : '反對'}</div>
+              <div class="text-xs text-slate-400 mt-2">等待其他玩家...</div>
+            </div>
+          `}
+        ` : resultHtml}
+      </div>
+    `;
+  } else if (phase === 'stage4') {
+    const isOnTeam = team.includes(state.uid);
+    const myMissionVote = missionVotes[state.uid];
+    const r = results[mission];
+    const allOnTeamVoted = team.every(uid => missionVotes[uid]);
+    const myRole2 = (gs.roleAssignments || {})[state.uid];
+    const isEvil = ROLE_FACTION[myRole2] === 'evil';
+
+    let resultHtml = '';
+    if (r) {
+      const failClass = r.fail > 0 ? 'text-rose-600' : 'text-emerald-600';
+      resultHtml = `
+        <div class="bg-white border-2 border-slate-200 rounded-xl p-4">
+          <div class="text-sm text-slate-500 mb-1">第 ${mission} 關結果</div>
+          <div class="text-2xl font-bold ${failClass}">${r.fail > 0 ? '失敗 ' + r.fail : '成功 ' + r.success}</div>
+          <div class="text-xs text-slate-500 mt-2">成功 ${r.success} / 失敗 ${r.fail}</div>
+        </div>
+      `;
+    }
+
+    body = `
+      <div class="space-y-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-amber-900">第 ${mission} 關 · 任務執行</div>
+          <div class="text-xs text-amber-700 mt-1">出征：${team.map(uid => esc((state.roomData.players[uid] || {}).nickname || '?')).join('、')}</div>
+        </div>
+        ${!r ? `
+          ${isOnTeam ? `
+            ${myMissionVote ? `
+              <div class="text-center py-4 bg-slate-50 rounded-xl">
+                <div class="text-sm text-slate-500">你已投：</div>
+                <div class="text-lg font-bold ${myMissionVote === 'success' ? 'text-emerald-600' : 'text-rose-600'}">${myMissionVote === 'success' ? '任務成功' : '任務失敗'}</div>
+                <div class="text-xs text-slate-400 mt-2">等待其他隊員...</div>
+              </div>
+            ` : `
+              <div class="space-y-3">
+                <button onclick="castMissionVote(true)" class="w-full bg-emerald-500 text-white py-4 rounded-xl text-lg font-bold active:scale-95">任務成功</button>
+                ${isEvil ? `<button onclick="castMissionVote(false)" class="w-full bg-rose-500 text-white py-4 rounded-xl text-lg font-bold active:scale-95">任務失敗</button>` : ''}
+              </div>
+            `}
+          ` : `
+            <div class="text-center py-8 text-slate-500">
+              <div class="text-4xl mb-2">⏳</div>
+              <div>出征隊伍正在秘密執行任務中...</div>
+              <div class="text-xs mt-2">已投 ${missionVotedCount}/${team.length}</div>
+            </div>
+          `}
+          ${allOnTeamVoted ? (state.isHost || isLeader ? `<button onclick="finishMission()" class="w-full bg-indigo-600 text-white py-3 rounded-xl mt-3">結算</button>` : '<div class="text-center text-slate-500 text-sm">等待結算...</div>') : ''}
+        ` : resultHtml}
+      </div>
+    `;
+  } else if (phase === 'stage5') {
+    const isLadyHolder = gs.ladyHolderUid === state.uid;
+    const myLadyInfo = (gs.initialInfo || {})[state.uid];
+    const hasChecked = myLadyInfo && myLadyInfo.seeType === 'alignment';
+    const playersExceptSelf = allPlayers.filter(p => p.uid !== state.uid && !(gs.ladyHistory || []).includes(p.uid));
+
+    body = `
+      <div class="space-y-4">
+        <div class="bg-purple-50 border border-purple-200 rounded-xl p-4">
+          <div class="text-sm font-medium text-purple-900">🌊 湖中女神查驗</div>
+          <div class="text-xs text-purple-700 mt-1">第 ${mission} 關結束後</div>
+        </div>
+        ${isLadyHolder ? `
+          ${hasChecked ? `
+            <div class="bg-white border-2 border-purple-300 rounded-2xl p-6 text-center">
+              <div class="text-sm text-slate-500 mb-2">查驗結果</div>
+              <div class="text-2xl font-bold">${(() => {
+                const targetUid = myLadyInfo.sees[0];
+                const targetP = state.roomData.players[targetUid];
+                return esc(targetP ? targetP.nickname : '?');
+              })()}</div>
+              <div class="text-lg mt-2 ${myLadyInfo.result === 'good' ? 'text-sky-600' : 'text-rose-600'} font-bold">
+                ${myLadyInfo.result === 'good' ? '🔵 好人' : '🔴 壞人'}
+              </div>
+              <div class="text-xs text-slate-500 mt-3">女神標記將轉移給對方</div>
+            </div>
+          ` : `
+            <div class="text-center text-sm text-slate-500 mb-2">選擇一名玩家查驗陣營</div>
+            <div class="space-y-2">
+              ${playersExceptSelf.map(p => `
+                <button onclick="checkLady('${p.uid}')" class="w-full bg-white border-2 border-slate-200 p-3 rounded-xl text-left active:scale-95">
+                  ${p.isHost ? '⭐' : ''}${esc(p.nickname)}
+                </button>
+              `).join('')}
+            </div>
+          `}
+        ` : `
+          <div class="text-center py-8 text-slate-500">
+            <div class="text-4xl mb-2">🌊</div>
+            <div>湖中女神持有者正在查驗...</div>
+            <div class="text-xs mt-2 text-slate-400">持有者：${esc((state.roomData.players[gs.ladyHolderUid] || {}).nickname || '?')}</div>
+          </div>
+        `}
+      </div>
+    `;
+  } else if (phase === 'stage6') {
+    const isAssassin = myRole === 'assassin';
+    body = `
+      <div class="space-y-4">
+        <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+          <div class="text-2xl">⚔️</div>
+          <div class="text-lg font-bold text-amber-900 mt-1">正義陣營完成 3 次任務！</div>
+          <div class="text-xs text-amber-700 mt-1">刺客請指認梅林</div>
+        </div>
+        ${isAssassin ? `
+          <div class="text-center text-sm text-slate-500 mb-2">選擇你認為的梅林：</div>
+          <div class="space-y-2">
+            ${allPlayers.filter(p => p.uid !== state.uid).map(p => `
+              <button onclick="assassinate('${p.uid}')" class="w-full bg-white border-2 border-slate-200 p-3 rounded-xl text-left active:scale-95">
+                ${esc(p.nickname)}
+              </button>
+            `).join('')}
+          </div>
+        ` : `
+          <div class="text-center py-8 text-slate-500">
+            <div class="text-4xl mb-2">🗡️</div>
+            <div>刺客正在指認梅林...</div>
+            <div class="text-xs mt-2 text-slate-400">刺客：${(() => {
+              const assassinUid = Object.keys(gs.roleAssignments || {}).find(uid => gs.roleAssignments[uid] === 'assassin');
+              return esc((state.roomData.players[assassinUid] || {}).nickname || '?');
+            })()}</div>
+          </div>
+        `}
+      </div>
+    `;
+  } else if (phase === 'over') {
+    body = renderOverBody();
+  }
+
+  return `<div>${renderHeader()}<div class="p-4">${body}</div></div>`;
+}
+
+function renderOverBody() {
+  const winner = state.roomData.meta.winner;
+  const reason = state.roomData.meta.winReason;
+  const gs = state.roomData.gameState || {};
+  const assignments = gs.roleAssignments || {};
+  const assassinUid = Object.keys(assignments).find(uid => assignments[uid] === 'assassin');
+  const merlinUid = Object.keys(assignments).find(uid => assignments[uid] === 'merlin');
+  const targetUid = gs.assassinationTarget;
+
+  let title = '';
+  let titleColor = '';
+  if (winner === 'good') {
+    title = '🔵 正義陣營獲勝！';
+    titleColor = 'text-sky-700';
+  } else {
+    title = '🔴 邪惡陣營獲勝！';
+    titleColor = 'text-rose-700';
+  }
+
+  let reasonText = '';
+  if (reason === 'missions_3_evil') reasonText = '壞人完成 3 次任務破壞';
+  else if (reason === 'rejections_5') reasonText = '連續 5 次否決';
+  else if (reason === 'assassin_hit') reasonText = '刺客刺中梅林';
+  else if (reason === 'assassin_miss') reasonText = '刺客刺錯人';
+
+  const revealHtml = playersOrdered(state.roomData).map(p => {
+    const r = assignments[p.uid] || 'good';
+    const info = ROLE_INFO[r];
+    return `
+      <div class="flex items-center justify-between py-2 px-3 ${info.faction === 'good' ? 'bg-sky-50' : 'bg-rose-50'} rounded-lg">
+        <div class="flex items-center gap-2">
+          ${p.isHost ? '<span class="text-amber-500">⭐</span>' : '<span class="w-4"></span>'}
+          <span class="font-medium">${esc(p.nickname)}</span>
+        </div>
+        <div class="text-sm">
+          <span class="${info.faction === 'good' ? 'text-sky-700' : 'text-rose-700'} font-bold">${esc(info.name)}</span>
+          <span class="text-xs text-slate-500 ml-1">${info.faction === 'good' ? '🔵' : '🔴'}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  let extra = '';
+  if (reason === 'assassin_hit' || reason === 'assassin_miss') {
+    const targetP = state.roomData.players[targetUid];
+    const merlinP = state.roomData.players[merlinUid];
+    extra = `<div class="bg-slate-50 rounded-xl p-3 text-sm">
+      刺客選擇：<span class="font-bold">${esc(targetP ? targetP.nickname : '?')}</span><br>
+      真正的梅林：<span class="font-bold">${esc(merlinP ? merlinP.nickname : '?')}</span>
+    </div>`;
+  }
+
+  return `
+    <div class="space-y-4">
+      <div class="bg-white border-2 ${winner === 'good' ? 'border-sky-300' : 'border-rose-300'} rounded-2xl p-6 text-center">
+        <div class="text-3xl font-bold ${titleColor}">${title}</div>
+        <div class="text-sm text-slate-600 mt-2">${reasonText}</div>
+      </div>
+      ${extra}
+      <div>
+        <div class="text-sm font-medium text-slate-700 mb-2">真實身份</div>
+        <div class="space-y-1">${revealHtml}</div>
+      </div>
+      ${state.isHost ? `<button onclick="backToLobby()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold active:scale-95">返回房間（重玩）</button>` : '<div class="text-center text-slate-500 text-sm py-4">等待房主重玩...</div>'}
+    </div>
+  `;
+}
+
+// ============================================================
+// Role Modal
+// ============================================================
+function openRoleModal() {
+  state.roleModalOpen = true;
+  renderRoleModal();
+}
+function closeRoleModal() {
+  state.roleModalOpen = false;
+  state.roleCardRevealed = false;
+  if (state.pressTimer) clearTimeout(state.pressTimer);
+  document.getElementById('modal-root').innerHTML = '';
+}
+function renderRoleModal() {
+  const modal = document.getElementById('modal-root');
+  if (!state.roleModalOpen) { modal.innerHTML = ''; return; }
+  const phase = state.roomData && state.roomData.meta && state.roomData.meta.phase;
+  if (!phase || !['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(phase)) {
+    state.roleModalOpen = false;
+    return;
+  }
+  const gs = state.roomData.gameState || {};
+  const myRole = (gs.roleAssignments || {})[state.uid];
+  const roleInfo = ROLE_INFO[myRole] || ROLE_INFO.good;
+  const factionColor = roleInfo.faction === 'good' ? 'sky' : 'rose';
+  const allRoles = ['merlin', 'percival', 'assassin', 'morgana', 'mordred', 'oberon'];
+  const cfg = state.roomData.gameConfig || { roles: {} };
+  const usedRoles = ['merlin', 'assassin'];
+  if (cfg.roles.percival) usedRoles.push('percival', 'morgana');
+  if (cfg.roles.mordred) usedRoles.push('mordred');
+  if (cfg.roles.oberon) usedRoles.push('oberon');
+
+  const roleListHtml = usedRoles.map(r => {
+    const info = ROLE_INFO[r];
+    const isMe = r === myRole;
+    const c = info.faction === 'good' ? 'sky' : 'rose';
+    return `
+      <div class="border-2 ${isMe ? 'border-amber-400 bg-amber-50' : 'border-slate-200'} rounded-xl p-3">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="font-bold">${isMe ? '⭐ ' : ''}${esc(info.name)}</div>
+            <div class="text-xs text-${c}-600 mt-1">${info.faction === 'good' ? '正義陣營' : '邪惡陣營'}</div>
+          </div>
+          ${isMe ? '<span class="text-xs bg-amber-400 text-white px-2 py-1 rounded">你</span>' : ''}
+        </div>
+        <div class="text-sm text-slate-600 mt-2">${info.desc}</div>
+      </div>
+    `;
+  }).join('');
+
+  modal.innerHTML = `
+    <div class="fixed inset-0 z-50 modal-bg flex items-end sm:items-center justify-center" onclick="if(event.target===this)closeRoleModal()">
+      <div class="bg-white w-full max-w-md max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl hide-scroll">
+        <div class="sticky top-0 bg-white border-b p-4 flex items-center justify-between">
+          <div class="font-bold">📖 我的角色與規則</div>
+          <button onclick="closeRoleModal()" class="text-slate-500">✕</button>
+        </div>
+        <div class="p-4 space-y-4">
+          <div>
+            <div class="text-xs text-slate-500 mb-2">你的角色（按住顯示）</div>
+            <div class="press-hold" onmousedown="startPress()" ontouchstart="startPress()" onmouseup="endPress()" onmouseleave="endPress()" ontouchend="endPress()">
+              <div class="border-4 border-${state.roleCardRevealed ? factionColor + '-400' : 'slate-300'} rounded-2xl p-6 text-center transition-colors">
+                ${state.roleCardRevealed ? `
+                  <div class="text-3xl font-bold text-${factionColor}-700">${esc(roleInfo.name)}</div>
+                  <div class="text-sm text-${factionColor}-600 mt-1">${roleInfo.faction === 'good' ? '正義陣營' : '邪惡陣營'}</div>
+                ` : `
+                  <div class="text-slate-400 text-2xl">🂠</div>
+                  <div class="text-xs text-slate-400 mt-1">按住 0.5 秒</div>
+                `}
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-slate-500 mb-2">本局登場角色</div>
+            <div class="space-y-2">${roleListHtml}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function startPress() {
+  if (state.pressTimer) clearTimeout(state.pressTimer);
+  state.pressTimer = setTimeout(() => {
+    state.roleCardRevealed = true;
+    renderRoleModal();
+  }, 500);
+}
+function endPress() {
+  if (state.pressTimer) clearTimeout(state.pressTimer);
+  if (state.roleCardRevealed) {
+    setTimeout(() => {
+      state.roleCardRevealed = false;
+      renderRoleModal();
+    }, 500);
+  }
+}
+
+// ============================================================
+// Actions
+// ============================================================
+async function goLanding() { state.view = 'landing'; state.errorMsg = ''; render(); }
+function goCreate() { state.view = 'create'; state.errorMsg = ''; render(); }
+function goJoin() { state.view = 'join'; state.errorMsg = ''; render(); }
+
+async function doCreate() {
+  const nick = document.getElementById('create-nick').value.trim();
+  const pwd = document.getElementById('create-pwd').value;
+  if (!nick) { state.errorMsg = '請輸入暱稱'; render(); return; }
+  if (pwd.length < 4) { state.errorMsg = '密碼至少 4 字'; render(); return; }
+  try {
+    const code = generateRoomCode();
+    const pwdHash = await sha256(pwd);
+    const r = db.ref('rooms/' + code);
+    await r.set({
+      meta: { hostUid: state.uid, createdAt: Date.now(), phase: 'lobby', locked: false, maxPlayers: 10 },
+      hostPassword: pwdHash,
+      players: {
+        [state.uid]: { nickname: nick, isHost: true, online: true, joinedAt: Date.now() }
+      }
+    });
+    state.roomCode = code;
+    state.isHost = true;
+    state.myData = { nickname: nick, isHost: true };
+    state.view = 'room';
+    attachRoomListener();
+    render();
+  } catch (e) {
+    state.errorMsg = '創建失敗：' + e.message;
+    render();
+  }
+}
+
+async function doJoin() {
+  const code = document.getElementById('join-code').value.trim().toUpperCase();
+  const nick = document.getElementById('join-nick').value.trim();
+  const pwd = document.getElementById('join-pwd').value;
+  if (!code || !nick || !pwd) { state.errorMsg = '請填寫所有欄位'; render(); return; }
+  try {
+    const r = db.ref('rooms/' + code);
+    const snap = await r.once('value');
+    if (!snap.exists()) { state.errorMsg = '房間不存在'; render(); return; }
+    const data = snap.val();
+    if (data.meta && data.meta.locked) { state.errorMsg = '遊戲已開始，無法加入'; render(); return; }
+    const pwdHash = await sha256(pwd);
+    if (data.hostPassword !== pwdHash) { state.errorMsg = '房東密碼錯誤'; render(); return; }
+    await r.child('players/' + state.uid).set({ nickname: nick, isHost: false, online: true, joinedAt: Date.now() });
+    state.roomCode = code;
+    state.isHost = false;
+    state.myData = { nickname: nick, isHost: false };
+    state.view = 'room';
+    attachRoomListener();
+    render();
+  } catch (e) {
+    state.errorMsg = '加入失敗：' + e.message;
+    render();
+  }
+}
+
+async function doStart() {
+  // 進 roleConfig
+  await db.ref('rooms/' + state.roomCode + '/meta/phase').set('roleConfig');
+}
+
+function toggleRole(role, on) {
+  const r = db.ref('rooms/' + state.roomCode + '/gameConfig/roles');
+  const update = {};
+  if (role === 'percival' || role === 'morgana') {
+    update.percival = on;
+    update.morgana = on;
+  } else {
+    update[role] = on;
+  }
+  r.update(update);
+}
+
+async function doConfirmRoles() {
+  const r = db.ref('rooms/' + state.roomCode);
+  const snap = await r.once('value');
+  const data = snap.val();
+  const playerUids = Object.keys(data.players);
+  const cfg = data.gameConfig || { roles: { merlin: true, assassin: true } };
+  const playerCount = playerUids.length;
+  // 確保遊戲設定完整
+  await r.child('gameConfig/playerCount').set(playerCount);
+  await r.child('gameConfig/roles/merlin').set(true);
+  await r.child('gameConfig/roles/assassin').set(true);
+  // 進 stage1
+  await startGame();
+}
+
+async function ackRole() {
+  const r = db.ref('rooms/' + state.roomCode + '/gameState/initialInfo/' + state.uid + '/ack');
+  await r.set(true);
+  // 檢查是否全員都 ack
+  const allUids = Object.keys(state.roomData.players);
+  const info = state.roomData.gameState.initialInfo || {};
+  const allAck = allUids.every(uid => info[uid] && info[uid].ack);
+  if (allAck) {
+    await db.ref('rooms/' + state.roomCode + '/meta/phase').set('stage2');
+    // 順便清掉 currentTeam
+    await db.ref('rooms/' + state.roomCode + '/gameState/currentTeam').set(null);
+  }
+}
+
+function toggleTeamMember(uid) {
+  const gs = state.roomData.gameState;
+  const team = (gs.currentTeam && gs.currentTeam.members) || [];
+  const playerCount = Object.keys(state.roomData.players).length;
+  const sizes = MISSION_CONFIG[playerCount].sizes;
+  const teamSize = sizes[(gs.mission || 1) - 1];
+  let newTeam;
+  if (team.includes(uid)) {
+    newTeam = team.filter(u => u !== uid);
+  } else {
+    if (team.length >= teamSize) {
+      toast('已達人數上限');
+      return;
+    }
+    newTeam = [...team, uid];
+  }
+  db.ref('rooms/' + state.roomCode + '/gameState/currentTeam').set({ members: newTeam, proposedAt: Date.now() });
+}
+
+async function submitTeam() {
+  await submitTeam();
+}
+
+function leaveRoom() {
+  if (state.roomCode) {
+    db.ref('rooms/' + state.roomCode + '/players/' + state.uid + '/online').set(false);
+    detachRoomListener();
+  }
+  state.roomCode = null;
+  state.roomData = null;
+  state.isHost = false;
+  state.view = 'landing';
+  render();
+}
+
+// ============================================================
+// Firebase Listeners
+// ============================================================
+let roomRef = null;
+function attachRoomListener() {
+  if (roomRef) roomRef.off();
+  roomRef = db.ref('rooms/' + state.roomCode);
+  roomRef.on('value', snap => {
+    const data = snap.val();
+    if (!data) {
+      // 房間被刪
+      toast('房間已被刪除');
+      leaveRoom();
+      return;
+    }
+    state.roomData = data;
+    if (data.meta && data.meta.phase && ['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(data.meta.phase)) {
+      state.view = 'room';
+    } else if (data.meta && data.meta.phase === 'roleConfig') {
+      state.view = 'room';
+    } else if (data.meta && data.meta.phase === 'lobby') {
+      state.view = 'room';
+    }
+    if (state.roleModalOpen) renderRoleModal();
+    else render();
+  });
+  // 在線狀態
+  const presenceRef = db.ref('rooms/' + state.roomCode + '/players/' + state.uid + '/online');
+  presenceRef.onDisconnect().set(false);
+  presenceRef.set(true);
+}
+function detachRoomListener() {
+  if (roomRef) {
+    roomRef.off();
+    roomRef = null;
+  }
+}
+
+// ============================================================
+// Main Render Router
+// ============================================================
+function render() {
+  const app = document.getElementById('app');
+  if (state.view === 'loading') return renderLoading(app);
+  if (state.view === 'landing') return renderLanding(app);
+  if (state.view === 'create') return renderCreate(app);
+  if (state.view === 'join') return renderJoin(app);
+  if (state.view === 'room') return renderRoom(app);
+  if (!app.innerHTML) renderLanding(app);
+}
+
+// ============================================================
+// Init
+// ============================================================
+auth.signInAnonymously().then(cred => {
+  state.uid = cred.user.uid;
+  state.ready = true;
+  state.view = 'landing';
+  render();
+}).catch(err => {
+  console.error('Auth error', err);
+  document.getElementById('app').innerHTML = `<div class="p-6 text-center text-rose-600">登入失敗：${err.message}</div>`;
+});
+</script>
+</body>
+</html>

@@ -260,6 +260,12 @@ async function startGame() {
   const playerUids = Object.keys(state.roomData.players);
   const assignments = assignRoles(playerUids, state.roomData.gameConfig);
   const initialInfo = generateInitialInfo(assignments, playerUids);
+  // BOT 玩家直接 ack
+  for (const uid of playerUids) {
+    const p = state.roomData.players[uid];
+    if (p && p.isBot) initialInfo[uid] = initialInfo[uid] || {};
+    if (p && p.isBot) initialInfo[uid].ack = true;
+  }
   const firstLeader = playerUids[0];
   const playerCount = playerUids.length;
   const ladyOn = !!state.roomData.gameConfig.roles.ladyOfLake;

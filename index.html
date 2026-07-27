@@ -603,59 +603,143 @@ function renderRoom(app) {
 
 function renderRoleConfigBody() {
   const cfg = state.roomData.gameConfig || { roles: { merlin: true, assassin: true, percival: false, morgana: false, mordred: false, oberon: false, ladyOfLake: false } };
-  const roles = cfg.roles;
   const players = playersOrdered(state.roomData);
   const count = players.length;
-  const valid = count >= 5 && count <= 10;
+  const { good: goodCount, evil: evilCount } = FACTION_TABLE[count] || FACTION_TABLE[5];
+  const roles = cfg.roles || {};
+  const selectedRoles = getSelectedRoles(roles);
+  const { good: selGood, evil: selEvil } = countRoles(selectedRoles);
+  const hintMsg = getRoleHintMessage(roles, count);
+  const canConfirm = state.isHost && isRoleSelectionValid(roles, count) && selGood === goodCount && selEvil === evilCount;
+
   const playersHtml = players.map(p => `<span class="inline-block bg-slate-100 px-2 py-1 rounded text-sm">${p.isHost ? '⭐' : ''}${esc(p.nickname)}</span>`).join('');
+
+  function RoleBtn({ id, label, faction, desc, forced, locked, lockedHint }) {
+    const isOn = !!roles[id];
+    const baseCls = faction === 'good'
+      ? (isOn ? 'bg-sky-500 text-white border-sky-600' : 'bg-white text-slate-600 border-slate-300')
+      : (isOn ? 'bg-rose-500 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-300');
+    const cursorCls = (locked || !state.isHost) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer active:scale-95';
+    const factionLabel = faction === 'good' ? '正' : '邪';
+    const hintIcon = id === 'percival' && !isOn && state.isHost ? '<div class="text-xs text-amber-500 mt-1">💡 啟用會連動莫甘娜</div>' : '';
+    const lockedEl = locked ? `<div class="text-xs text-slate-400 mt-1">${lockedHint}</div>` : hintIcon;
+    return `
+      <div class="${baseCls} border-2 rounded-xl p-3 transition-all ${cursorCls}"
+           ${!locked && state.isHost ? `onclick="toggleRole('${id}')"` : ''}>
+        <div class="flex items-center justify-between">
+          <div class="font-bold text-sm">${esc(label)}</div>
+          <div class="text-xs font-bold px-2 py-0.5 rounded ${faction === 'good' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}">${factionLabel}</div>
+        </div>
+        <div class="text-xs text-slate-500 mt-1">${desc}</div>
+        ${forced ? '<div class="text-xs text-indigo-600 mt-1">✅ 固定</div>' : ''}
+        ${lockedEl}
+      </div>
+    `;
+  }
+
+  const ladyLocked = count <= 7;
+  const ladyHint = ladyLocked ? '需 8 人以上' : '';
 
   return `
     <div class="space-y-4">
       <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
         <div class="text-sm font-bold text-indigo-900 mb-1">設定本局角色</div>
-        <div class="text-xs text-indigo-700">房主勾選、其他人看得到（透明）</div>
+        <div class="text-xs text-indigo-700">${count} 人局 · 正 ${goodCount} vs 邪 ${evilCount}</div>
       </div>
-      <div class="bg-white border-2 border-slate-200 rounded-xl p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="text-sm">☑ 派西維爾</span>
-          <span class="text-xs text-slate-500">💡成對角色</span>
-        </div>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" data-role="percival" ${roles.percival ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('percival', this.checked)">
-          <span class="text-sm">啟用派西維爾（會自動帶莫甘娜）</span>
-        </label>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" data-role="morgana" ${roles.morgana ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('morgana', this.checked)">
-          <span class="text-sm">啟用莫甘娜（會自動帶派西維爾）</span>
-        </label>
-        <hr>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" data-role="mordred" ${roles.mordred ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('mordred', this.checked)">
-          <span class="text-sm">啟用莫德雷德（梅林看不到的紅營老大）</span>
-        </label>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" data-role="oberon" ${roles.oberon ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('oberon', this.checked)">
-          <span class="text-sm">啟用奧伯倫（不認識隊友的紅營孤臣）</span>
-        </label>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" data-role="ladyOfLake" ${roles.ladyOfLake ? 'checked' : ''} ${!state.isHost ? 'disabled' : ''} onchange="toggleRole('ladyOfLake', this.checked)">
-          <span class="text-sm">啟用湖中女神（驗人神器）</span>
-        </label>
-        <div class="text-xs text-slate-500 pt-2 border-t">梅林 + 刺客 固定啟用</div>
-      </div>
+
+      ${hintMsg ? `<div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">${hintMsg}</div>` : ''}
+
       <div>
-        <div class="text-sm text-slate-500 mb-2">玩家 (${count})</div>
+        <div class="text-xs text-slate-500 mb-2">正義陣營 · 已選 ${selGood}/${goodCount}</div>
+        <div class="space-y-2">
+          ${RoleBtn({ id: 'merlin', label: '梅林', faction: 'good', desc: '看到所有壞人（除莫德雷德）', forced: true, locked: false })}
+          ${RoleBtn({ id: 'percival', label: '派西維爾', faction: 'good', desc: '看到梅林 + 莫甘娜（不分清楚）', forced: false, locked: false })}
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs text-slate-500 mb-2">邪惡陣營 · 已選 ${selEvil}/${evilCount}</div>
+        <div class="space-y-2">
+          ${RoleBtn({ id: 'assassin', label: '刺客', faction: 'evil', desc: '遊戲結束可刺殺梅林', forced: true, locked: false })}
+          ${RoleBtn({ id: 'morgana', label: '莫甘娜', faction: 'evil', desc: '對派西維爾假扮梅林', forced: false, locked: false })}
+          ${RoleBtn({ id: 'mordred', label: '莫德雷德', faction: 'evil', desc: '梅林看不到的紅營老大', forced: false, locked: false })}
+          ${RoleBtn({ id: 'oberon', label: '奧伯倫', faction: 'evil', desc: '不認識隊友的紅營孤臣', forced: false, locked: false, lockedHint: '⚠️ 對正義方有利，慎用' })}
+          ${RoleBtn({ id: 'ladyOfLake', label: '湖中女神', faction: 'good', desc: '第 2/3/4 關後可驗人', forced: false, locked: ladyLocked, lockedHint: ladyHint })}
+        </div>
+      </div>
+
+      <div>
+        <div class="text-xs text-slate-500 mb-2">玩家 (${count}/10)</div>
         <div class="flex flex-wrap gap-2">${playersHtml}</div>
       </div>
+
       ${state.isHost ? `
-        <div class="pt-4 border-t">
-          <button onclick="doConfirmRoles()" class="w-full bg-indigo-600 text-white py-4 rounded-xl text-lg font-bold active:scale-95">確認並開始</button>
+        <div class="pt-4 border-t space-y-2">
+          <div class="text-xs text-center text-slate-500">
+            正 ${selGood}/${goodCount} · 邪 ${selEvil}/${evilCount}
+            ${selGood === goodCount && selEvil === evilCount ? '<span class="text-emerald-600 font-bold ml-2">✅ 人數符合</span>' : '<span class="text-rose-500 font-bold ml-2">需湊滿</span>'}
+          </div>
+          <button onclick="doConfirmRoles()" ${canConfirm ? '' : 'disabled'} class="w-full ${canConfirm ? 'bg-indigo-600 active:scale-95' : 'bg-slate-300 cursor-not-allowed'} text-white py-4 rounded-xl text-lg font-bold transition-all">確認並開始</button>
         </div>
       ` : `
         <div class="text-center text-slate-500 text-sm py-4">等待房主確認角色...</div>
       `}
     </div>
   `;
+}
+
+// 計算已選角色的好人/壞人數（梅林刺客固定算進去）
+function countRoles(selectedRoles) {
+  let good = 0, evil = 0;
+  // 梅林刺客永遠算
+  good += 1; // merlin
+  evil += 1; // assassin
+  for (const r of selectedRoles) {
+    if (r === 'percival' || r === 'ladyOfLake') good++;
+    else if (r === 'morgana' || r === 'mordred' || r === 'oberon') evil++;
+  }
+  return { good, evil };
+}
+
+function getSelectedRoles(roles) {
+  const out = [];
+  if (roles.percival) out.push('percival');
+  if (roles.morgana) out.push('morgana');
+  if (roles.mordred) out.push('mordred');
+  if (roles.oberon) out.push('oberon');
+  if (roles.ladyOfLake) out.push('ladyOfLake');
+  return out;
+}
+
+function isRoleSelectionValid(roles, playerCount) {
+  const { good, evil } = FACTION_TABLE[playerCount] || FACTION_TABLE[5];
+  const { good: sg, evil: se } = countRoles(getSelectedRoles(roles));
+  if (sg !== good || se !== evil) return false;
+  // 5人派西維爾規則：要有莫德雷德或莫甘娜
+  if (playerCount === 5 && roles.percival && !roles.morgana && !roles.mordred) return false;
+  // 湖中女神 8+ 人才能用
+  if (roles.ladyOfLake && playerCount <= 7) return false;
+  return true;
+}
+
+function getRoleHintMessage(roles, playerCount) {
+  const msgs = [];
+  // 5人派西維爾規則
+  if (playerCount === 5 && roles.percival && !roles.morgana && !roles.mordred) {
+    msgs.push('💡 五人局：選了派西維爾，需再選莫甘娜或莫德雷德');
+  }
+  // 人數不符
+  const { good, evil } = FACTION_TABLE[playerCount] || FACTION_TABLE[5];
+  const { good: sg, evil: se } = countRoles(getSelectedRoles(roles));
+  if (sg !== good) msgs.push(`正義需 ${good} 張（目前 ${sg}）`);
+  if (se !== evil) msgs.push(`邪惡需 ${evil} 張（目前 ${se}）`);
+  // 湖中女神
+  if (roles.ladyOfLake && playerCount <= 7) {
+    msgs.push('💡 湖中女神需 8 人以上');
+  }
+  // 奧伯倫警告
+  if (roles.oberon) msgs.push('⚠️ 奧伯倫對正義方有利，慎用');
+  return msgs.join(' · ');
 }
 
 function renderStageBody(phase) {
@@ -1194,24 +1278,37 @@ async function doStart() {
 
 function toggleRole(role, on) {
   const r = db.ref('rooms/' + state.roomCode + '/gameConfig/roles');
+  const playerCount = Object.keys(state.roomData.players).length;
+  const current = state.roomData.gameConfig?.roles || {};
   const update = {};
-  if (role === 'percival' || role === 'morgana') {
+
+  if (role === 'percival') {
     update.percival = on;
+    if (on) update.morgana = true; // 連動莫甘娜
+    else update.morgana = false;
+  } else if (role === 'morgana') {
     update.morgana = on;
-  } else {
-    update[role] = on;
+    if (on) { update.percival = true; } // 連動派西維爾
+    else update.percival = false;
+  } else if (role === 'ladyOfLake') {
+    // 8人以上才能用
+    if (!on || playerCount >= 8) update.ladyOfLake = on;
+  } else if (role === 'oberon') {
+    update.oberon = on;
+  } else if (role === 'mordred') {
+    update.mordred = on;
   }
   r.update(update);
 }
 
 async function doConfirmRoles() {
+  const playerCount = Object.keys(state.roomData.players).length;
+  const roles = state.roomData.gameConfig?.roles || {};
+  if (!isRoleSelectionValid(roles, playerCount)) {
+    toast('角色人數不符合，請調整後再試');
+    return;
+  }
   const r = db.ref('rooms/' + state.roomCode);
-  const snap = await r.once('value');
-  const data = snap.val();
-  const playerUids = Object.keys(data.players);
-  const cfg = data.gameConfig || { roles: { merlin: true, assassin: true } };
-  const playerCount = playerUids.length;
-  // 確保遊戲設定完整
   await r.child('gameConfig/playerCount').set(playerCount);
   await r.child('gameConfig/roles/merlin').set(true);
   await r.child('gameConfig/roles/assassin').set(true);

@@ -1174,7 +1174,7 @@ function renderStageBody(phase) {
       const p = state.roomData.players[uid];
       return p ? p.nickname : '?';
     }).join('、');
-    const allVoted = votedCount >= allUids.length;
+    const allVoted = votedCount >= team.length;
     const approveCount = Object.values(votes).filter(v => v === 'approve').length;
     const rejectCount = Object.values(votes).filter(v => v === 'reject').length;
 
@@ -1206,7 +1206,7 @@ function renderStageBody(phase) {
           <div class="text-xs text-amber-700 mt-1">第 ${mission} 關</div>
         </div>
         ${!allVoted ? `
-          <div class="text-center text-sm text-slate-500">已投票：${votedCount}/${allUids.length}</div>
+          <div class="text-center text-sm text-slate-500">已投票：${votedCount}/${team.length}</div>
           ${!myVote ? `
             <div class="grid grid-cols-2 gap-3">
               <button onclick="castVote('approve')" class="bg-emerald-500 text-white py-4 rounded-xl text-lg font-bold active:scale-95">同意</button>
@@ -1812,9 +1812,33 @@ function attachRoomListener() {
         scheduleBotPropose(leaderUid, gs2);
       }
     }
-    // Stage3 & Stage4: bot voting
-    if (data.meta && ['stage3','stage4'].includes(data.meta.phase)) {
-      scheduleBotVotes(data.meta.phase);
+    // Stage3: auto-finish when all team members voted
+    if (data.meta && data.meta.phase === 'stage3') {
+      scheduleBotVotes('stage3');
+      const team = (gs2.currentTeam || {}).members || [];
+      const votes = gs2.currentVotes || {};
+      const votedCount = Object.keys(votes).length;
+      if (team.length > 0 && votedCount >= team.length) {
+        const leaderUid = gs2.leaderUid;
+        const isBotLeader = leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot;
+        if (isBotLeader) {
+          setTimeout(() => finishVoting(), 500);
+        }
+      }
+    }
+    // Stage4: auto-finish mission when all team members voted
+    if (data.meta && data.meta.phase === 'stage4') {
+      scheduleBotVotes('stage4');
+      const team = (gs2.currentTeam || {}).members || [];
+      const missionVotes = gs2.missionVotes || {};
+      const allVoted = team.length > 0 && team.every(uid => uid in missionVotes);
+      if (allVoted) {
+        const leaderUid = gs2.leaderUid;
+        const isBotLeader = leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot;
+        if (isBotLeader) {
+          setTimeout(() => finishMission(), 500);
+        }
+      }
     }
     // Game over: assassin bot auto-kills
     if (data.meta && data.meta.phase === 'over' && data.meta.winner === 'good') {

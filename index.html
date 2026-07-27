@@ -556,6 +556,15 @@ async function startGame() {
   });
 }
 async function proposeTeam(memberUids) {
+  const gs = state.roomData && state.roomData.gameState || {};
+  const playerCount = state.roomData ? Object.keys(state.roomData.players).length : 5;
+  const sizes = MISSION_CONFIG[playerCount].sizes;
+  const mission = gs.mission || 1;
+  const teamSize = sizes[mission - 1];
+  if (!memberUids || memberUids.length < teamSize) {
+    toast('人數不足，需 ' + teamSize + ' 人');
+    return;
+  }
   const r = db.ref('rooms/' + state.roomCode);
   await r.update({
     'gameState/currentTeam': { members: memberUids, proposedAt: Date.now() },
@@ -568,10 +577,17 @@ async function castVote(vote) {
   await r.set(vote);
 }
 async function submitTeam() {
-  // currentTeam already set, just move to stage3
-  const r = db.ref('rooms/' + state.roomCode);
-  await r.child('meta/phase').set('stage3');
-  await r.child('gameState/currentVotes').set(null);
+  const gs = state.roomData && state.roomData.gameState || {};
+  const team = (gs.currentTeam && gs.currentTeam.members) || [];
+  const playerCount = state.roomData ? Object.keys(state.roomData.players).length : 5;
+  const sizes = MISSION_CONFIG[playerCount].sizes;
+  const mission = gs.mission || 1;
+  const teamSize = sizes[mission - 1];
+  if (team.length < teamSize) {
+    toast('人數不足，需 ' + teamSize + ' 人');
+    return;
+  }
+  await proposeTeam(team);
 }
 async function finishVoting() {
   const r = db.ref('rooms/' + state.roomCode);

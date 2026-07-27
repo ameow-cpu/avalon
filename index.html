@@ -1127,14 +1127,20 @@ async function doCreate() {
   if (!nick) { state.errorMsg = '請輸入暱稱'; render(); return; }
   if (pwd.length < 4) { state.errorMsg = '密碼至少 4 字'; render(); return; }
   try {
+    // 強迫拿新的匿名 UID，避免同瀏覽器 session 覆寫
+    await auth.signOut();
+    const cred = await auth.signInAnonymously();
+    const uid = cred.user.uid;
+    state.uid = uid;
+
     const code = generateRoomCode();
     const pwdHash = await sha256(pwd);
     const r = db.ref('rooms/' + code);
     await r.set({
-      meta: { hostUid: state.uid, createdAt: Date.now(), phase: 'lobby', locked: false, maxPlayers: 10 },
+      meta: { hostUid: uid, createdAt: Date.now(), phase: 'lobby', locked: false, maxPlayers: 10 },
       hostPassword: pwdHash,
       players: {
-        [state.uid]: { nickname: nick, isHost: true, online: true, joinedAt: Date.now() }
+        [uid]: { nickname: nick, isHost: true, online: true, joinedAt: Date.now() }
       }
     });
     state.roomCode = code;
@@ -1155,6 +1161,12 @@ async function doJoin() {
   const pwd = document.getElementById('join-pwd').value;
   if (!code || !nick || !pwd) { state.errorMsg = '請填寫所有欄位'; render(); return; }
   try {
+    // 強迫拿新的匿名 UID，避免同瀏覽器 session 覆寫
+    await auth.signOut();
+    const cred = await auth.signInAnonymously();
+    const uid = cred.user.uid;
+    state.uid = uid;
+
     const r = db.ref('rooms/' + code);
     const snap = await r.once('value');
     if (!snap.exists()) { state.errorMsg = '房間不存在'; render(); return; }
@@ -1162,7 +1174,7 @@ async function doJoin() {
     if (data.meta && data.meta.locked) { state.errorMsg = '遊戲已開始，無法加入'; render(); return; }
     const pwdHash = await sha256(pwd);
     if (data.hostPassword !== pwdHash) { state.errorMsg = '房東密碼錯誤'; render(); return; }
-    await r.child('players/' + state.uid).set({ nickname: nick, isHost: false, online: true, joinedAt: Date.now() });
+    await r.child('players/' + uid).set({ nickname: nick, isHost: false, online: true, joinedAt: Date.now() });
     state.roomCode = code;
     state.isHost = false;
     state.myData = { nickname: nick, isHost: false };

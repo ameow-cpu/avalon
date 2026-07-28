@@ -408,7 +408,8 @@ const state = {
   missionCountdownStart: null,
   missionCountdownEnd: null,
   missionCountdownSecs: 10,
-  missionCountdownTimer: null
+  missionCountdownTimer: null,
+  _autoFinishedMission: null // guards against duplicate finishMission calls
 };
 
 // ============================================================
@@ -1350,7 +1351,7 @@ function renderStageBody(phase) {
               <div class="text-xs mt-2">已投 ${missionVotedCount}/${team.length}</div>
             </div>
           `}
-          ${allOnTeamVoted ? (state.isHost || isLeader ? `<button onclick="finishMission()" class="w-full bg-indigo-600 text-white py-3 rounded-xl mt-3">結算</button>` : '<div class="text-center text-slate-500 text-sm">等待結算...</div>') : ''}
+          ${allOnTeamVoted ? '<div class="text-center text-slate-500 text-sm">等待自動結算...</div>' : ''}
         ` : resultHtml}
       </div>
     `;
@@ -1873,7 +1874,7 @@ function attachRoomListener() {
       }
     }
 
-    // Clean up mission countdown if leaving stage4
+    // Clean up mission countdown and auto-finish guard if leaving stage4
     const prevPhase = state.roomData && state.roomData.meta && state.roomData.meta.phase;
     if (prevPhase === 'stage4' && data.meta && data.meta.phase !== 'stage4') {
       if (state.missionCountdownTimer) {
@@ -1881,6 +1882,7 @@ function attachRoomListener() {
         state.missionCountdownTimer = null;
         state.missionCountdownActive = false;
       }
+      state._autoFinishedMission = null;
     }
     state.roomData = data;
     state.votesConfirmed = (data.gameState && data.gameState.votesConfirmed) || {};
@@ -1935,7 +1937,7 @@ function attachRoomListener() {
         }, 300);
       }
     }
-    // Stage4: auto-finish mission only if result not yet shown (prevent re-trigger)
+    // Stage4: auto-finish mission only once per mission attempt
     if (data.meta && data.meta.phase === 'stage4') {
       scheduleBotVotes('stage4');
       const results = gs2.missionResults || {};
@@ -1943,13 +1945,15 @@ function attachRoomListener() {
       const team = (gs2.currentTeam || {}).members || [];
       const missionVotes = gs2.missionVotes || {};
       const allVoted = team.length > 0 && team.every(uid => uid in missionVotes);
-      // Only auto-finish if result doesn't exist yet AND all voted
-      if (allVoted && !results[mission]) {
-        const leaderUid = gs2.leaderUid;
-        const isBotLeader = leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot;
-        if (isBotLeader) {
-          setTimeout(() => finishMission(), 500);
-        }
+      // Guard: only auto-finish if result doesn't exist yet AND all voted AND mission number matches
+      if (allVoted && !results[mission] && state._autoFinishedMission !== gs2.mission) {
+        state._autoFinishedMission = gs2.mission;
+        setTimeout(() => {
+          const currentMission = state.roomData && state.roomData.gameState && state.roomData.gameState.mission;
+          if (currentMission === state._autoFinishedMission) {
+            finishMission();
+          }
+        }, 500);
       }
     }
     // Game over: assassin bot auto-kills

@@ -404,6 +404,7 @@ const state = {
   pressTimer: null,
   errorMsg: '',
   votesConfirmed: {},       // stage3: who has confirmed vote result
+  missionResultConfirmed: {}, // stage4: who has confirmed mission result
   missionCountdownActive: false,
   missionCountdownStart: null,
   missionCountdownEnd: null,
@@ -587,6 +588,11 @@ async function castVote(vote) {
 async function confirmVoteResult() {
   if (state.votesConfirmed && state.votesConfirmed[state.uid]) return;
   const r = db.ref('rooms/' + state.roomCode + '/gameState/votesConfirmed/' + state.uid);
+  await r.set(true);
+}
+async function confirmMissionResult() {
+  if (state.missionResultConfirmed && state.missionResultConfirmed[state.uid]) return;
+  const r = db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed/' + state.uid);
   await r.set(true);
 }
 async function submitTeam() {
@@ -1273,53 +1279,23 @@ function renderStageBody(phase) {
     const isEvil = ROLE_FACTION[myRole2] === 'evil';
 
     let resultHtml = '';
+    const mrConfirmed = state.missionResultConfirmed || {};
+    const myMrConfirmed = !!mrConfirmed[state.uid];
+    const mrConfirmCount = Object.keys(mrConfirmed).length;
+    const allPlayers = playersOrdered(state.roomData);
+    const allUids2 = allPlayers.map(p => p.uid);
+    const allMrConfirmed = mrConfirmCount >= allUids2.length;
     if (r) {
-      // Countdown: use setInterval for reliable timing (works even when tab is hidden)
-      if (!state.missionCountdownActive) {
-        state.missionCountdownActive = true;
-        state.missionCountdownStart = Date.now();
-        state.missionCountdownEnd = Date.now() + 10000;
-        state.missionCountdownSecs = 10;
-        const tick = () => {
-          const left = Math.max(0, state.missionCountdownEnd - Date.now());
-          state.missionCountdownSecs = Math.ceil(left / 1000);
-          // Force re-render to update the countdown display
-          const app = document.getElementById('app');
-          if (app) {
-            const secs = state.missionCountdownSecs;
-            const pct = (left / 10000) * 100;
-            const bar = app.querySelector('.mission-countdown-bar');
-            const txt = app.querySelector('.mission-countdown-secs');
-            if (bar) bar.style.width = pct + '%';
-            if (txt) txt.textContent = secs + '秒';
-          }
-          if (left <= 0) {
-            state.missionCountdownActive = false;
-            clearInterval(state.missionCountdownTimer);
-            state.missionCountdownTimer = null;
-            state.missionCountdownSecs = 0;
-            finishMission();
-          }
-        };
-        state.missionCountdownTimer = setInterval(tick, 200);
-        tick(); // run immediately
-      }
       const failClass = r.fail > 0 ? 'text-rose-600' : 'text-emerald-600';
-      const secs = state.missionCountdownSecs || 0;
-      const pct = (secs / 10) * 100;
       resultHtml = `
         <div class="bg-white border-2 border-slate-200 rounded-xl p-4">
           <div class="text-sm text-slate-500 mb-1">第 ${mission} 關結果</div>
           <div class="text-2xl font-bold ${failClass}">${r.fail > 0 ? '失敗 ' + r.fail : '成功 ' + r.success}</div>
           <div class="text-xs text-slate-500 mt-2">成功 ${r.success} / 失敗 ${r.fail}</div>
-          <div class="mt-3">
-            <div class="flex justify-between text-xs text-slate-400 mb-1">
-              <span>等待自動結算</span><span class="mission-countdown-secs">${secs}秒</span>
-            </div>
-            <div class="h-2 bg-slate-200 rounded-full overflow-hidden">
-              <div class="h-full bg-indigo-500 rounded-full mission-countdown-bar transition-all duration-200" style="width:${pct}%"></div>
-            </div>
-          </div>
+          <div class="mt-3 text-center text-xs text-slate-400">已確認：${mrConfirmCount}/${allUids2.length}</div>
+          <button onclick="confirmMissionResult()" ${myMrConfirmed ? 'disabled' : ''} class="w-full mt-2 ${myMrConfirmed ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 active:scale-95'} text-white py-3 rounded-xl font-medium">
+            ${myMrConfirmed ? '✓ 已確認' : '我知道了'}
+          </button>
         </div>
       `;
     }
@@ -1883,9 +1859,11 @@ function attachRoomListener() {
         state.missionCountdownActive = false;
       }
       state._autoFinishedMission = null;
+      state.missionResultConfirmed = {};
     }
     state.roomData = data;
     state.votesConfirmed = (data.gameState && data.gameState.votesConfirmed) || {};
+    state.missionResultConfirmed = (data.gameState && data.gameState.missionResultConfirmed) || {};
     if (data.meta && data.meta.phase && ['stage1','stage2','stage3','stage4','stage5','stage6','over'].includes(data.meta.phase)) {
       state.view = 'room';
     } else if (data.meta && data.meta.phase === 'roleConfig') {
@@ -1937,7 +1915,7 @@ function attachRoomListener() {
         }, 300);
       }
     }
-    // Stage4: auto-finish mission only once per mission attempt
+    // Stage4: handle mission result confirmation
     if (data.meta && data.meta.phase === 'stage4') {
       scheduleBotVotes('stage4');
       const results = gs2.missionResults || {};
@@ -1945,15 +1923,31 @@ function attachRoomListener() {
       const team = (gs2.currentTeam || {}).members || [];
       const missionVotes = gs2.missionVotes || {};
       const allVoted = team.length > 0 && team.every(uid => uid in missionVotes);
-      // Guard: only auto-finish if result doesn't exist yet AND all voted AND mission number matches
-      if (allVoted && !results[mission] && state._autoFinishedMission !== gs2.mission) {
-        state._autoFinishedMission = gs2.mission;
+      const mrConfirmed = gs2.missionResultConfirmed || {};
+      const mrConfirmCount = Object.keys(mrConfirmed).length;
+      const allUids = Object.keys(data.players || {});
+      const allMrConfirmed = mrConfirmCount >= allUids.length;
+
+      // Auto-finish if result exists and all confirmed
+      if (results[mission] && allMrConfirmed) {
         setTimeout(() => {
-          const currentMission = state.roomData && state.roomData.gameState && state.roomData.gameState.mission;
-          if (currentMission === state._autoFinishedMission) {
-            finishMission();
+          db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed').set(null);
+          state.missionResultConfirmed = {};
+          finishMission();
+        }, 300);
+      }
+
+      // Bot players auto-confirm when result exists
+      if (results[mission]) {
+        Object.keys(data.players || {}).forEach(uid => {
+          const p = data.players[uid];
+          if (!p || !p.isBot) return;
+          if (!mrConfirmed[uid]) {
+            setTimeout(() => {
+              db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed/' + uid).set(true);
+            }, 300 + Math.random() * 600);
           }
-        }, 500);
+        });
       }
     }
     // Game over: assassin bot auto-kills

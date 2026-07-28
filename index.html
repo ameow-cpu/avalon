@@ -367,31 +367,19 @@ function scheduleBotVotes(phase) {
     if (uid === state.uid) return; // don't handle own uid
 
     if (phase === 'stage3') {
-      // Everyone votes in stage3 (not just team members)
       const votes = gs.currentVotes || {};
       if (votes[uid]) return; // already voted
       const vote = getBotTeamVote(uid, gs, allPlayers);
-      const delay = 500 + Math.random() * 1000;
-      setTimeout(() => {
-        db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
-      }, delay);
+      // Vote immediately, no delay
+      db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
     } else if (phase === 'stage4') {
-      // Only team members vote on mission
       const team = (gs.currentTeam || {}).members || [];
       const missionVotes = gs.missionVotes || {};
       if (!team.includes(uid)) return; // not on team
       if (missionVotes[uid]) return;   // already voted
       const vote = getBotMissionVote(uid, gs, allPlayers);
-      console.log('[scheduleBotVotes stage4] uid=' + uid + ' bot=' + (state.roomData.players[uid]||{}).nickname + ' team=' + team.join(',') + ' vote=' + vote);
-      const delay = 500 + Math.random() * 1000;
-      setTimeout(() => {
-        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes').once('value').then(snap => {
-          const current = snap.val() || {};
-          if (current[uid]) return; // already voted
-          console.log('[BOT WRITE MISSION VOTE] uid=' + uid + ' vote=' + vote);
-          return db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
-        });
-      }, delay);
+      // Vote immediately, no delay
+      db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
     }
   });
 }
@@ -588,6 +576,29 @@ async function proposeTeam(memberUids) {
     'gameState/currentVotes': null
   });
   await r.child('meta/phase').set('stage3');
+  // Immediately trigger stage3 bot votes so they don't miss the phase change
+  setTimeout(() => {
+    const roomData = state.roomData;
+    if (!roomData) return;
+    const phase = roomData.meta && roomData.meta.phase;
+    if (phase !== 'stage3') return;
+    const team = memberUids;
+    const players = roomData.players || {};
+    const allPlayers = playersOrdered(roomData);
+    console.log('[proposeTeam] triggering stage3 bot votes, team=' + team.join(','));
+    Object.keys(players).forEach(uid => {
+      const p = players[uid];
+      if (!p || !p.isBot) return;
+      if (uid === state.uid) return;
+      if (!team.includes(uid)) return;
+      const gs2 = roomData.gameState || {};
+      const votes = gs2.currentVotes || {};
+      if (votes[uid]) return;
+      const vote = getBotTeamVote(uid, gs2, allPlayers);
+      console.log('[proposeTeam bot vote] uid=' + uid + ' nickname=' + p.nickname + ' vote=' + vote);
+      db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
+    });
+  }, 300);
 }
 async function castVote(vote) {
   const r = db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + state.uid);
@@ -660,6 +671,25 @@ async function finishVoting() {
       'meta/phase': 'stage4',
       'gameState/missionVotes': {}
     });
+    // Immediately trigger stage4 bot mission votes
+    setTimeout(() => {
+      const roomData = state.roomData;
+      if (!roomData) return;
+      const gs2 = roomData.gameState || {};
+      const team = (gs2.currentTeam && gs2.currentTeam.members) || [];
+      const players = roomData.players || {};
+      const allPlayers = playersOrdered(roomData);
+      Object.keys(players).forEach(uid => {
+        const p = players[uid];
+        if (!p || !p.isBot) return;
+        if (!team.includes(uid)) return;
+        const missionVotes = gs2.missionVotes || {};
+        if (missionVotes[uid]) return;
+        const vote = getBotMissionVote(uid, gs2, allPlayers);
+        console.log('[finishVoting→stage4 bot vote] uid=' + uid + ' nickname=' + p.nickname + ' vote=' + vote);
+        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
+      });
+    }, 300);
   }
 }
 async function castMissionVote(success) {

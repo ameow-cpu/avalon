@@ -366,20 +366,21 @@ function scheduleBotVotes(phase) {
     if (uid === state.uid) return; // don't handle own uid
 
     if (phase === 'stage3') {
-      const team = (gs.currentTeam || {}).members || [];
-      const voted = (gs.currentVotes || {})[uid];
-      if (!team.includes(uid) || voted) return;
+      // Everyone votes in stage3 (not just team members)
+      const votes = gs.currentVotes || {};
+      if (votes[uid]) return; // already voted
       const vote = getBotTeamVote(uid, gs, allPlayers);
-      const delay = 800 + Math.random() * 1500;
+      const delay = 500 + Math.random() * 1000;
       setTimeout(() => {
         db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
       }, delay);
     } else if (phase === 'stage4') {
+      // Only team members vote on mission
       const team = (gs.currentTeam || {}).members || [];
-      const voted = (gs.missionVotes || {})[uid];
-      if (!team.includes(uid) || voted) return;
+      const missionVotes = gs.missionVotes || {};
+      if (!team.includes(uid) || missionVotes[uid]) return;
       const vote = getBotMissionVote(uid, gs, allPlayers);
-      const delay = 800 + Math.random() * 1500;
+      const delay = 500 + Math.random() * 1000;
       setTimeout(() => {
         db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
       }, delay);
@@ -1255,6 +1256,18 @@ function renderStageBody(phase) {
               <div class="text-xs text-slate-400 mt-2">等待其他玩家...</div>
             </div>
           `}
+          <div class="mt-4">
+            <div class="text-xs text-slate-500 mb-2">所有人必須投票：</div>
+            <div class="space-y-1">
+              ${allPlayers.map(p => {
+                const v = votes[p.uid];
+                const done = !!v;
+                const label = v === 'approve' ? '同意 ✓' : v === 'reject' ? '反對 ✗' : '等待...';
+                const color = v === 'approve' ? 'text-emerald-600' : v === 'reject' ? 'text-rose-600' : 'text-slate-400';
+                return `<div class="flex justify-between py-1 text-sm ${color}"><span>${p.uid === state.uid ? '⭐（你）' : ''}${esc(p.nickname)}</span><span>${label}</span></div>`;
+              }).join('')}
+            </div>
+          </div>
         ` : resultHtml}
       </div>
     `;

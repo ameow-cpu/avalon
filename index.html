@@ -1877,27 +1877,34 @@ function attachRoomListener() {
         scheduleBotPropose(leaderUid, gs2);
       }
     }
-    // Stage3: auto-finish when all team members voted
+    // Stage3: wait for ALL players to vote, then wait for ALL to confirm before finishVoting
     if (data.meta && data.meta.phase === 'stage3') {
       scheduleBotVotes('stage3');
-      const team = (gs2.currentTeam || {}).members || [];
+      const allUids = Object.keys(data.players || {});
       const votes = gs2.currentVotes || {};
+      const confirmed = gs2.votesConfirmed || {};
       const votedCount = Object.keys(votes).length;
-      if (team.length > 0 && votedCount >= team.length) {
-        const leaderUid = gs2.leaderUid;
-        const isBotLeader = leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot;
-        if (isBotLeader) {
-          setTimeout(() => finishVoting(), 500);
-        }
+      const confirmedCount = Object.keys(confirmed).length;
+      const allVoted = votedCount >= allUids.length;
+      const allConfirmed = allVoted && confirmedCount >= allUids.length;
+      if (allConfirmed) {
+        // Reset for next round and advance
+        setTimeout(() => {
+          db.ref('rooms/' + state.roomCode + '/gameState/votesConfirmed').set(null);
+          finishVoting();
+        }, 300);
       }
     }
-    // Stage4: auto-finish mission when all team members voted
+    // Stage4: auto-finish mission only if result not yet shown (prevent re-trigger)
     if (data.meta && data.meta.phase === 'stage4') {
       scheduleBotVotes('stage4');
+      const results = gs2.missionResults || {};
+      const mission = gs2.mission || 1;
       const team = (gs2.currentTeam || {}).members || [];
       const missionVotes = gs2.missionVotes || {};
       const allVoted = team.length > 0 && team.every(uid => uid in missionVotes);
-      if (allVoted) {
+      // Only auto-finish if result doesn't exist yet AND all voted
+      if (allVoted && !results[mission]) {
         const leaderUid = gs2.leaderUid;
         const isBotLeader = leaderUid && data.players && data.players[leaderUid] && data.players[leaderUid].isBot;
         if (isBotLeader) {

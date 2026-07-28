@@ -602,9 +602,49 @@ async function confirmVoteResult() {
   await r.set(true);
 }
 async function confirmMissionResult() {
-  if (state.missionResultConfirmed && state.missionResultConfirmed[state.uid]) return;
-  const r = db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed/' + state.uid);
-  await r.set(true);
+  if (!state.roomData) return;
+  const gs = state.roomData.gameState;
+  if (!gs) return;
+  const mission = gs.mission || 1;
+  const results = gs.missionResults || {};
+  const allUids = Object.keys(state.roomData.players || {});
+  const r = db.ref('rooms/' + state.roomCode);
+
+  // Write my confirmation to Firebase
+  await r.child('gameState/missionResultConfirmed/' + state.uid).set(true);
+
+  // Read fresh confirmed count from Firebase
+  const snap = await r.child('gameState/missionResultConfirmed').once('value');
+  const mrConfirmed = snap.val() || {};
+  const confirmedCount = Object.keys(mrConfirmed).length;
+  const allConfirmed = confirmedCount >= allUids.length;
+  console.log('[confirmMissionResult] confirmed=' + confirmedCount + '/' + allUids.length + ' allConfirmed=' + allConfirmed);
+
+  if (!allConfirmed) return;
+  if (results[mission]) return; // already advanced for this mission
+
+  // All confirmed → advance phase
+  const playerCount = Object.keys(state.roomData.players).length;
+  const team = (gs.currentTeam && gs.currentTeam.members) || [];
+  const missionVotes = gs.missionVotes || {};
+  const failCount = Object.values(missionVotes).filter(v => v === 'fail').length;
+  const successCount = team.length - failCount;
+  const newResults = { ...results, [mission]: { success: successCount, fail: failCount, voters: team } };
+  const failedCount = Object.values(newResults).filter(res => res.fail > 0).length;
+  if (failedCount >= 3) {
+    await r.update({ 'gameState/missionResults': newResults, 'meta/phase': 'over', 'meta/winner': 'evil', 'meta/winReason': '3_fails' });
+  } else if (mission - failedCount >= 3) {
+    if (mission === 5) {
+      await r.update({ 'gameState/missionResults': newResults, 'meta/phase': 'stage6', 'meta/winReason': 'good_3_missions' });
+    } else {
+      await r.update({ 'gameState/missionResults': newResults, 'meta/phase': 'stage5' });
+    }
+  } else {
+    const nextMission = mission + 1;
+    await r.update({ 'gameState/missionResults': newResults, 'meta/phase': 'stage2', 'gameState/mission': nextMission, 'gameState/currentTeam': null, 'gameState/currentVotes': null });
+  }
+  await r.child('gameState/missionResultConfirmed').set(null);
+  state.missionResultConfirmed = {};
 }
 async function submitTeam() {
   const gs = state.roomData && state.roomData.gameState || {};
@@ -689,67 +729,23 @@ async function castMissionVote(success) {
   await r.set(success ? 'success' : 'fail');
 }
 async function finishMission() {
+  // ONLY writes the mission result to Firebase
+  // Does NOT advance phase — that happens in confirmMissionResult
   const r = db.ref('rooms/' + state.roomCode);
   const gs = state.roomData.gameState;
   if (!gs) return;
-  // Guard: only process if we're still in stage4
-  const currentPhase = (state.roomData.meta || {}).phase;
-  if (currentPhase !== 'stage4') {
-    console.warn('[finishMission] skipped - phase is', currentPhase);
-    return;
-  }
   const mission = gs.mission || 1;
+  const results = gs.missionResults || {};
+  if (results[mission]) return; // already written
   const playerCount = Object.keys(state.roomData.players).length;
   const team = (gs.currentTeam && gs.currentTeam.members) || [];
-  if (!team || team.length === 0) {
-    console.warn('[finishMission] currentTeam is empty, skipping');
-    return;
-  }
-  const snap = await r.child('gameState/missionVotes').once('value');
-  const votes = snap.val() || {};
-  const successCount = Object.values(votes).filter(v => v === 'success').length;
-  const failCount = Object.values(votes).filter(v => v === 'fail').length;
-
-  // 第 4 關雙失敗票
-  let actualFail = failCount;
-  const doubleFail = MISSION_CONFIG[playerCount].doubleFailMission === mission;
-  if (doubleFail && failCount >= 2) actualFail = 2;
-  if (doubleFail && failCount === 1) actualFail = 0;  // 1 票不算失敗
-  const isSuccess = actualFail === 0;
-
-  const results = state.roomData.gameState.missionResults || {};
-  results[mission] = { success: successCount, fail: failCount, voters: team };
-  await r.child('gameState/missionResults').set(results);
-
-  // 累積勝場
-  let goodWin = 0, evilWin = 0;
-  for (let i = 1; i <= mission; i++) {
-    if (results[i] && MISSION_CONFIG[playerCount].doubleFailMission === i) {
-      // 雙失敗票
-      evilWin += (results[i].fail >= 2) ? 1 : 0;
-      goodWin += (results[i].fail < 2) ? 1 : 0;
-    } else {
-      evilWin += (results[i] && results[i].fail > 0) ? 1 : 0;
-      goodWin += (results[i] && results[i].fail === 0) ? 1 : 0;
-    }
-  }
-
-  if (evilWin >= 3) {
-    await r.update({ 'meta/phase': 'over', 'meta/winner': 'evil', 'meta/winReason': 'missions_3_evil' });
-    return;
-  }
-  if (goodWin >= 3) {
-    await r.update({ 'meta/phase': 'stage6', 'meta/winner': null });
-    return;
-  }
-  // 觸發女神？
-  const ladyOn = state.roomData.gameConfig.roles.ladyOfLake;
-  if (ladyOn && [2, 3, 4].includes(mission)) {
-    await r.update({ 'meta/phase': 'stage5' });
-    return;
-  }
-  // 換隊長，進下一關
-  await nextMissionOrLeader();
+  if (!team || team.length === 0) return;
+  const missionVotes = gs.missionVotes || {};
+  const failCount = Object.values(missionVotes).filter(v => v === 'fail').length;
+  const successCount = team.length - failCount;
+  const newResults = { ...results, [mission]: { success: successCount, fail: failCount, voters: team } };
+  await r.update({ 'gameState/missionResults': newResults });
+  console.log('[finishMission] result written: mission', mission, 'fail=', failCount);
 }
 async function nextMissionOrLeader() {
   const r = db.ref('rooms/' + state.roomCode);
@@ -1372,25 +1368,7 @@ function renderStageBody(phase) {
         ` : resultHtml}
       </div>
     `;
-    // Human client also triggers finishMission when all voted (extra safety net)
-    // Only trigger if we're actually in stage4 and result not yet recorded
-    if (phase === 'stage4') {
-      const results = gs.missionResults || {};
-      const mission = gs.mission || 1;
-      if (!results[mission]) {
-        const team2 = (gs.currentTeam && gs.currentTeam.members) || [];
-        const mVotes = missionVotes || {};
-        const allVoted2 = team2.length > 0 && team2.every(uid => uid in mVotes);
-        if (allVoted2) {
-          console.log('[render] all mission votes in, triggering finishMission from render');
-          setTimeout(() => {
-            if ((state.roomData.meta || {}).phase === 'stage4') {
-              finishMission();
-            }
-          }, 200);
-        }
-      }
-    }
+
     if (phase === 'stage4' && !results[mission]) {
       const triggerBotMissionVote = () => {
         const gs = state.roomData && state.roomData.gameState || {};
@@ -1997,19 +1975,12 @@ function attachRoomListener() {
         }, 300);
       }
     }
-    // Stage4: handle mission result confirmation
+    // Stage4: bot players vote and auto-confirm
     if (data.meta && data.meta.phase === 'stage4') {
       scheduleBotVotes('stage4');
       const results = gs2.missionResults || {};
       const mission = gs2.mission || 1;
-      const team = (gs2.currentTeam || {}).members || [];
-      const missionVotes = gs2.missionVotes || {};
-      const allVoted = team.length > 0 && team.every(uid => uid in missionVotes);
       const mrConfirmed = gs2.missionResultConfirmed || {};
-      const mrConfirmCount = Object.keys(mrConfirmed).length;
-      const allUids = Object.keys(data.players || {});
-      const allMrConfirmed = mrConfirmCount >= allUids.length;
-
       // Bot players auto-confirm when result exists
       if (results[mission]) {
         Object.keys(data.players || {}).forEach(uid => {
@@ -2021,22 +1992,6 @@ function attachRoomListener() {
             }, 300 + Math.random() * 600);
           }
         });
-        // When all confirmed AND result exists, advance
-        if (allMrConfirmed) {
-          setTimeout(() => {
-            db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed').set(null);
-            state.missionResultConfirmed = {};
-            // Only proceed if still in stage4
-            const snap2 = state.roomData;
-            if ((snap2.meta || {}).phase === 'stage4') {
-              const gs3 = snap2.gameState || {};
-              const m = gs3.mission || 1;
-              if (!gs3.missionResults || !gs3.missionResults[m]) {
-                finishMission();
-              }
-            }
-          }, 500);
-        }
       }
     }
     // Game over: assassin bot auto-kills

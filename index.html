@@ -691,9 +691,14 @@ async function castMissionVote(success) {
 async function finishMission() {
   const r = db.ref('rooms/' + state.roomCode);
   const gs = state.roomData.gameState;
-  const mission = gs.mission;
+  if (!gs) return;
+  const mission = gs.mission || 1;
   const playerCount = Object.keys(state.roomData.players).length;
-  const team = gs.currentTeam.members;
+  const team = (gs.currentTeam && gs.currentTeam.members) || [];
+  if (!team || team.length === 0) {
+    console.warn('[finishMission] currentTeam is empty, skipping');
+    return;
+  }
   const snap = await r.child('gameState/missionVotes').once('value');
   const votes = snap.val() || {};
   const successCount = Object.values(votes).filter(v => v === 'success').length;
@@ -1361,7 +1366,20 @@ function renderStageBody(phase) {
         ` : resultHtml}
       </div>
     `;
-    // Also trigger bot mission votes from render (backup for when listener missed it)
+    // Human client also triggers finishMission when all voted (extra safety net)
+    if (phase === 'stage4') {
+      const results = gs.missionResults || {};
+      const mission = gs.mission || 1;
+      if (!results[mission]) {
+        const team2 = (gs.currentTeam && gs.currentTeam.members) || [];
+        const mVotes = missionVotes || {};
+        const allVoted2 = team2.length > 0 && team2.every(uid => uid in mVotes);
+        if (allVoted2) {
+          console.log('[render] all mission votes in, triggering finishMission from render');
+          setTimeout(() => finishMission(), 200);
+        }
+      }
+    }
     if (phase === 'stage4' && !results[mission]) {
       const triggerBotMissionVote = () => {
         const gs = state.roomData && state.roomData.gameState || {};

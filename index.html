@@ -576,29 +576,21 @@ async function proposeTeam(memberUids) {
     'gameState/currentVotes': null
   });
   await r.child('meta/phase').set('stage3');
-  // Immediately trigger stage3 bot votes so they don't miss the phase change
-  setTimeout(() => {
-    const roomData = state.roomData;
-    if (!roomData) return;
-    const phase = roomData.meta && roomData.meta.phase;
-    if (phase !== 'stage3') return;
-    const team = memberUids;
-    const players = roomData.players || {};
-    const allPlayers = playersOrdered(roomData);
-    console.log('[proposeTeam] triggering stage3 bot votes, team=' + team.join(','));
-    Object.keys(players).forEach(uid => {
-      const p = players[uid];
-      if (!p || !p.isBot) return;
-      if (uid === state.uid) return;
-      if (!team.includes(uid)) return;
-      const gs2 = roomData.gameState || {};
-      const votes = gs2.currentVotes || {};
-      if (votes[uid]) return;
-      const vote = getBotTeamVote(uid, gs2, allPlayers);
-      console.log('[proposeTeam bot vote] uid=' + uid + ' nickname=' + p.nickname + ' vote=' + vote);
-      db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + uid).set(vote);
-    });
-  }, 300);
+  // BOT votes：直接寫入，不等 listener 更新
+  const players = state.roomData.players || {};
+  const allPlayers = playersOrdered(state.roomData);
+  const updates = {};
+  Object.keys(players).forEach(uid => {
+    const p = players[uid];
+    if (!p || !p.isBot) return;
+    if (uid === state.uid) return;
+    const vote = getBotTeamVote(uid, gs, allPlayers);
+    updates['gameState/currentVotes/' + uid] = vote;
+  });
+  if (Object.keys(updates).length > 0) {
+    console.log('[proposeTeam BOT VOTES]', updates);
+    await r.update(updates);
+  }
 }
 async function castVote(vote) {
   const r = db.ref('rooms/' + state.roomCode + '/gameState/currentVotes/' + state.uid);
@@ -665,31 +657,29 @@ async function finishVoting() {
       'meta/phase': 'stage2'
     });
   } else {
-    // 通過，進任務
+    // 通過，進任務 — 更新 phase 並直接寫入 BOT mission votes（不等 setTimeout）
     await r.update({
       'gameState/rejections': 0,
       'meta/phase': 'stage4',
       'gameState/missionVotes': {}
     });
-    // Immediately trigger stage4 bot mission votes
-    setTimeout(() => {
-      const roomData = state.roomData;
-      if (!roomData) return;
-      const gs2 = roomData.gameState || {};
-      const team = (gs2.currentTeam && gs2.currentTeam.members) || [];
-      const players = roomData.players || {};
-      const allPlayers = playersOrdered(roomData);
-      Object.keys(players).forEach(uid => {
-        const p = players[uid];
-        if (!p || !p.isBot) return;
-        if (!team.includes(uid)) return;
-        const missionVotes = gs2.missionVotes || {};
-        if (missionVotes[uid]) return;
-        const vote = getBotMissionVote(uid, gs2, allPlayers);
-        console.log('[finishVoting→stage4 bot vote] uid=' + uid + ' nickname=' + p.nickname + ' vote=' + vote);
-        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
-      });
-    }, 300);
+    // BOT mission votes：直接寫入，不等 listener 更新
+    const gs2 = state.roomData.gameState || {};
+    const team = (gs2.currentTeam && gs2.currentTeam.members) || [];
+    const players = state.roomData.players || {};
+    const allPlayers = playersOrdered(state.roomData);
+    const updates = {};
+    Object.keys(players).forEach(uid => {
+      const p = players[uid];
+      if (!p || !p.isBot) return;
+      if (!team.includes(uid)) return;
+      const vote = getBotMissionVote(uid, gs2, allPlayers);
+      updates['gameState/missionVotes/' + uid] = vote;
+    });
+    if (Object.keys(updates).length > 0) {
+      console.log('[finishVoting→stage4 BOT MISSION VOTES]', updates);
+      await r.update(updates);
+    }
   }
 }
 async function castMissionVote(success) {

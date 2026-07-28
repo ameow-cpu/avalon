@@ -1256,18 +1256,6 @@ function renderStageBody(phase) {
               <div class="text-xs text-slate-400 mt-2">等待其他玩家...</div>
             </div>
           `}
-          <div class="mt-4">
-            <div class="text-xs text-slate-500 mb-2">所有人必須投票：</div>
-            <div class="space-y-1">
-              ${allPlayers.map(p => {
-                const v = votes[p.uid];
-                const done = !!v;
-                const label = v === 'approve' ? '同意 ✓' : v === 'reject' ? '反對 ✗' : '等待...';
-                const color = v === 'approve' ? 'text-emerald-600' : v === 'reject' ? 'text-rose-600' : 'text-slate-400';
-                return `<div class="flex justify-between py-1 text-sm ${color}"><span>${p.uid === state.uid ? '⭐（你）' : ''}${esc(p.nickname)}</span><span>${label}</span></div>`;
-              }).join('')}
-            </div>
-          </div>
         ` : resultHtml}
       </div>
     `;
@@ -1900,10 +1888,24 @@ function attachRoomListener() {
       const confirmedCount = Object.keys(confirmed).length;
       const allVoted = votedCount >= allUids.length;
       const allConfirmed = allVoted && confirmedCount >= allUids.length;
+      // Bots auto-confirm when they see all voted
+      if (allVoted) {
+        Object.keys(data.players || {}).forEach(uid => {
+          const p = data.players[uid];
+          if (!p || !p.isBot) return;
+          const confirmed = gs2.votesConfirmed || {};
+          if (!confirmed[uid]) {
+            setTimeout(() => {
+              db.ref('rooms/' + state.roomCode + '/gameState/votesConfirmed/' + uid).set(true);
+            }, 300 + Math.random() * 600);
+          }
+        });
+      }
       if (allConfirmed) {
         // Reset for next round and advance
         setTimeout(() => {
           db.ref('rooms/' + state.roomCode + '/gameState/votesConfirmed').set(null);
+          state.votesConfirmed = {};
           finishVoting();
         }, 300);
       }

@@ -692,6 +692,12 @@ async function finishMission() {
   const r = db.ref('rooms/' + state.roomCode);
   const gs = state.roomData.gameState;
   if (!gs) return;
+  // Guard: only process if we're still in stage4
+  const currentPhase = (state.roomData.meta || {}).phase;
+  if (currentPhase !== 'stage4') {
+    console.warn('[finishMission] skipped - phase is', currentPhase);
+    return;
+  }
   const mission = gs.mission || 1;
   const playerCount = Object.keys(state.roomData.players).length;
   const team = (gs.currentTeam && gs.currentTeam.members) || [];
@@ -1367,6 +1373,7 @@ function renderStageBody(phase) {
       </div>
     `;
     // Human client also triggers finishMission when all voted (extra safety net)
+    // Only trigger if we're actually in stage4 and result not yet recorded
     if (phase === 'stage4') {
       const results = gs.missionResults || {};
       const mission = gs.mission || 1;
@@ -1376,7 +1383,11 @@ function renderStageBody(phase) {
         const allVoted2 = team2.length > 0 && team2.every(uid => uid in mVotes);
         if (allVoted2) {
           console.log('[render] all mission votes in, triggering finishMission from render');
-          setTimeout(() => finishMission(), 200);
+          setTimeout(() => {
+            if ((state.roomData.meta || {}).phase === 'stage4') {
+              finishMission();
+            }
+          }, 200);
         }
       }
     }
@@ -1999,15 +2010,6 @@ function attachRoomListener() {
       const allUids = Object.keys(data.players || {});
       const allMrConfirmed = mrConfirmCount >= allUids.length;
 
-      // Auto-finish if result exists and all confirmed
-      if (results[mission] && allMrConfirmed) {
-        setTimeout(() => {
-          db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed').set(null);
-          state.missionResultConfirmed = {};
-          finishMission();
-        }, 300);
-      }
-
       // Bot players auto-confirm when result exists
       if (results[mission]) {
         Object.keys(data.players || {}).forEach(uid => {
@@ -2019,6 +2021,22 @@ function attachRoomListener() {
             }, 300 + Math.random() * 600);
           }
         });
+        // When all confirmed AND result exists, advance
+        if (allMrConfirmed) {
+          setTimeout(() => {
+            db.ref('rooms/' + state.roomCode + '/gameState/missionResultConfirmed').set(null);
+            state.missionResultConfirmed = {};
+            // Only proceed if still in stage4
+            const snap2 = state.roomData;
+            if ((snap2.meta || {}).phase === 'stage4') {
+              const gs3 = snap2.gameState || {};
+              const m = gs3.mission || 1;
+              if (!gs3.missionResults || !gs3.missionResults[m]) {
+                finishMission();
+              }
+            }
+          }, 500);
+        }
       }
     }
     // Game over: assassin bot auto-kills

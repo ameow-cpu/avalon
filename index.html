@@ -378,11 +378,17 @@ function scheduleBotVotes(phase) {
       // Only team members vote on mission
       const team = (gs.currentTeam || {}).members || [];
       const missionVotes = gs.missionVotes || {};
-      if (!team.includes(uid) || missionVotes[uid]) return;
+      if (!team.includes(uid)) return; // not on team
+      if (missionVotes[uid]) return;   // already voted
       const vote = getBotMissionVote(uid, gs, allPlayers);
       const delay = 500 + Math.random() * 1000;
       setTimeout(() => {
-        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
+        // Double-check: read current state before writing
+        db.ref('rooms/' + state.roomCode + '/gameState/missionVotes').once('value').then(snap => {
+          const current = snap.val() || {};
+          if (current[uid]) return; // already voted
+          return db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
+        });
       }, delay);
     }
   });
@@ -656,6 +662,8 @@ async function finishVoting() {
 }
 async function castMissionVote(success) {
   const r = db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + state.uid);
+  const snap = await r.once('value');
+  if (snap.exists()) return; // already voted
   await r.set(success ? 'success' : 'fail');
 }
 async function finishMission() {
@@ -1331,6 +1339,23 @@ function renderStageBody(phase) {
         ` : resultHtml}
       </div>
     `;
+    // Also trigger bot mission votes from render (backup for when listener missed it)
+    if (phase === 'stage4' && !results[mission]) {
+      setTimeout(() => {
+        const gs = state.roomData && state.roomData.gameState || {};
+        const team = (gs.currentTeam || {}).members || [];
+        const missionVotes = gs.missionVotes || {};
+        const allPlayers = playersOrdered(state.roomData);
+        Object.keys(state.roomData.players || {}).forEach(uid => {
+          const p = state.roomData.players[uid];
+          if (!p || !p.isBot) return;
+          if (!team.includes(uid)) return;
+          if (missionVotes[uid]) return;
+          const vote = getBotMissionVote(uid, gs, allPlayers);
+          db.ref('rooms/' + state.roomCode + '/gameState/missionVotes/' + uid).set(vote);
+        });
+      }, 300);
+    }
   } else if (phase === 'stage5') {
     const isLadyHolder = gs.ladyHolderUid === state.uid;
     const myLadyInfo = (gs.initialInfo || {})[state.uid];
